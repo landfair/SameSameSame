@@ -3798,77 +3798,100 @@
         }
 
         function generateNERDetails(text1, text2, id1, id2) {
-            // Extract entities from both texts - all capitalized sequences (proper nouns)
+            const isEnabled = window.nlp !== undefined;
+
+            // Extract entities using NLP (same function as nerSimilarity)
             const extractEntities = (text) => {
                 const wordCount = tokenize(text).length;
 
-                // Extract sequences of capitalized words (proper nouns)
-                // Updated to handle mixed case like "EdTech" or "iPhone"
-                // Also handles abbreviations like "Mr. Smith", "Mt. Edna", "Rodeo Dr."
-                const properNounPattern = /\b[A-Z][A-Za-z]*\.?(?:\s+[A-Z][A-Za-z]*\.?)*\b/g;
+                if (!window.nlp) {
+                    // Fallback to simple capitalization pattern
+                    const properNounPattern = /\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b/g;
+                    const matches = text.match(properNounPattern) || [];
+                    const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
+                    const entities = matches.filter(m => !commonWords.has(m));
+                    const uniqueEntities = [...new Set(entities)];
 
-                // Remove punctuation from the text before matching to avoid "EdTech." vs "EdTech" issues
-                const cleanText = text.replace(/([.!?;:,])/g, ' $1 ');
-                const matches = cleanText.match(properNounPattern) || [];
+                    return {
+                        entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
+                        entityList: uniqueEntities,
+                        count: uniqueEntities.length,
+                        density: wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0,
+                        wordCount: wordCount,
+                        people: [],
+                        places: [],
+                        organizations: []
+                    };
+                }
 
-                // Filter out common sentence-starting words and single letters
-                const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
+                try {
+                    const doc = nlp(text);
+                    const people = doc.people().out('array');
+                    const places = doc.places().out('array');
+                    const organizations = doc.organizations().out('array');
+                    const properNouns = doc.match('#ProperNoun').out('array');
 
-                // Advanced filtering: Only include words that appear capitalized in mid-sentence positions
-                // This prevents sentence-initial capitalization from being treated as named entities
-                const sentenceBoundaryPattern = /[.!?]\s+/g;
-                const sentences = text.split(sentenceBoundaryPattern);
+                    const allEntities = [...people, ...places, ...organizations, ...properNouns];
+                    const uniqueEntities = [...new Set(allEntities)];
+                    const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
 
-                const validEntities = new Set();
-
-                // Find words that appear in mid-sentence positions
-                sentences.forEach(sentence => {
-                    const sentenceMatches = sentence.match(/\b[A-Z][A-Za-z]*\.?(?:\s+[A-Z][A-Za-z]*\.?)*\b/g) || [];
-
-                    // All words after the first are mid-sentence
-                    sentenceMatches.slice(1).forEach(match => {
-                        if (match.length > 1 && !commonWords.has(match)) {
-                            validEntities.add(match);
-                        }
-                    });
-                });
-
-                // Now filter the original matches to only include valid entities
-                const entities = matches.filter(m => validEntities.has(m));
-
-                // Deduplicate
-                const uniqueEntities = [...new Set(entities)];
-
-                // Calculate density (per 100 words)
-                const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
-
-                return {
-                    entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
-                    entityList: uniqueEntities,
-                    count: uniqueEntities.length,
-                    density: density,
-                    wordCount: wordCount
-                };
+                    return {
+                        entities: new Set(uniqueEntities.map(e => e.toLowerCase().trim())),
+                        entityList: uniqueEntities,
+                        count: uniqueEntities.length,
+                        density: density,
+                        wordCount: wordCount,
+                        people: people,
+                        places: places,
+                        organizations: organizations
+                    };
+                } catch (error) {
+                    console.error('Error in NLP-based NER:', error);
+                    return {
+                        entities: new Set(),
+                        entityList: [],
+                        count: 0,
+                        density: 0,
+                        wordCount: wordCount,
+                        people: [],
+                        places: [],
+                        organizations: []
+                    };
+                }
             };
 
             const entities1 = extractEntities(text1);
             const entities2 = extractEntities(text2);
 
-            // Find shared entities
+            // Find shared entities (by category)
             const sharedEntities = [...entities1.entities].filter(x => entities2.entities.has(x));
+            const sharedPeople = entities1.people.filter(p => entities2.people.map(p2 => p2.toLowerCase()).includes(p.toLowerCase()));
+            const sharedPlaces = entities1.places.filter(p => entities2.places.map(p2 => p2.toLowerCase()).includes(p.toLowerCase()));
+            const sharedOrgs = entities1.organizations.filter(o => entities2.organizations.map(o2 => o2.toLowerCase()).includes(o.toLowerCase()));
 
             const similarity = nerSimilarity(text1, text2);
 
             return `
                 <div style="background: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                    <h3 style="margin: 0 0 10px 0;">Named Entity Recognition (NER) Similarity</h3>
-                    <p>Extracts all capitalized sequences (proper nouns) from both texts and compares them. Based on MIT 2024 study showing LLM-assisted writing has distinct NER patterns (Cramer's V = 0.55 vs 0.27 for human-only).</p>
+                    <h3 style="margin: 0 0 10px 0;">Named Entity Recognition (NER) Similarity ${!isEnabled ? '(Fallback)' : '(NLP-Powered)'}</h3>
+                    <p>${isEnabled
+                        ? 'Uses Compromise.js NLP to identify and categorize named entities (people, places, organizations, proper nouns). Compares entity usage patterns between texts.'
+                        : 'Compromise.js not loaded - using basic capitalization pattern matching as fallback.'
+                    }</p>
                     <div style="background: #fff3cd; padding: 10px; border-radius: 5px; margin: 10px 0;">
-                        <strong>Detection Method:</strong> Extracts all capitalized word sequences (e.g., "John Smith", "New York University", "MIT")
+                        <strong>Detection Method:</strong> ${isEnabled
+                            ? 'NLP-based entity recognition identifies people (John Smith), places (New York), organizations (MIT), and proper nouns'
+                            : 'Regex pattern matching for capitalized sequences (less accurate than NLP)'
+                        }
                     </div>
                     <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0;">
                         <strong>Similarity Formula:</strong> Combines content similarity (60% weight - shared entities) with density similarity (40% weight - usage rate patterns)
                     </div>
+                    ${!isEnabled ? `
+                    <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0;">
+                        <strong>Note:</strong> Compromise.js library not loaded. Using fallback regex pattern matching which is less accurate than NLP-based detection.
+                    </div>
+                    ` : ''}
                 </div>
 
                 <div style="background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
@@ -5794,57 +5817,72 @@
         }
 
         function nerSimilarity(text1, text2) {
-            // Extract named entities - all capitalized sequences (proper nouns)
+            // Extract named entities using Compromise.js NLP
             const extractEntities = (text) => {
                 const wordCount = tokenize(text).length;
 
-                // Extract sequences of capitalized words (proper nouns)
-                // Matches: "John Smith", "New York University", "MIT", "EdTech", etc.
-                // Updated to handle mixed case like "EdTech" or "iPhone"
-                const properNounPattern = /\b[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)*\b/g;
+                if (!window.nlp) {
+                    console.warn('NER: Compromise.js not loaded, using fallback');
+                    // Fallback to simple capitalization pattern
+                    const properNounPattern = /\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b/g;
+                    const matches = text.match(properNounPattern) || [];
+                    const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
+                    const entities = matches.filter(m => !commonWords.has(m));
+                    const uniqueEntities = [...new Set(entities)];
 
-                // Remove punctuation from the text before matching to avoid "EdTech." vs "EdTech" issues
-                const cleanText = text.replace(/([.!?;:,])/g, ' $1 ');
-                const matches = cleanText.match(properNounPattern) || [];
+                    return {
+                        entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
+                        entityList: uniqueEntities,
+                        count: uniqueEntities.length,
+                        density: wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0,
+                        wordCount: wordCount,
+                        people: [],
+                        places: [],
+                        organizations: []
+                    };
+                }
 
-                // Filter out common sentence-starting words and single letters
-                const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
+                try {
+                    const doc = nlp(text);
 
-                // Advanced filtering: Only include words that appear capitalized in mid-sentence positions
-                // This prevents sentence-initial capitalization from being treated as named entities
-                const sentenceBoundaryPattern = /[.!?]\s+/g;
-                const sentences = text.split(sentenceBoundaryPattern);
+                    // Extract different entity types using Compromise.js
+                    const people = doc.people().out('array');
+                    const places = doc.places().out('array');
+                    const organizations = doc.organizations().out('array');
 
-                const validEntities = new Set();
+                    // Also get general proper nouns that might not be categorized
+                    const properNouns = doc.match('#ProperNoun').out('array');
 
-                // Find words that appear in mid-sentence positions
-                sentences.forEach(sentence => {
-                    const sentenceMatches = sentence.match(/\b[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*)*\b/g) || [];
+                    // Combine all entities and deduplicate
+                    const allEntities = [...people, ...places, ...organizations, ...properNouns];
+                    const uniqueEntities = [...new Set(allEntities)];
 
-                    // All words after the first are mid-sentence
-                    sentenceMatches.slice(1).forEach(match => {
-                        if (match.length > 1 && !commonWords.has(match)) {
-                            validEntities.add(match);
-                        }
-                    });
-                });
+                    // Calculate density (per 100 words)
+                    const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
 
-                // Now filter the original matches to only include valid entities
-                const entities = matches.filter(m => validEntities.has(m));
-
-                // Deduplicate
-                const uniqueEntities = [...new Set(entities)];
-
-                // Calculate density (per 100 words)
-                const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
-
-                return {
-                    entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
-                    entityList: uniqueEntities,
-                    count: uniqueEntities.length,
-                    density: density,
-                    wordCount: wordCount
-                };
+                    return {
+                        entities: new Set(uniqueEntities.map(e => e.toLowerCase().trim())),
+                        entityList: uniqueEntities,
+                        count: uniqueEntities.length,
+                        density: density,
+                        wordCount: wordCount,
+                        people: people,
+                        places: places,
+                        organizations: organizations
+                    };
+                } catch (error) {
+                    console.error('Error in NLP-based NER:', error);
+                    return {
+                        entities: new Set(),
+                        entityList: [],
+                        count: 0,
+                        density: 0,
+                        wordCount: wordCount,
+                        people: [],
+                        places: [],
+                        organizations: []
+                    };
+                }
             };
 
             const entities1 = extractEntities(text1);
