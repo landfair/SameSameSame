@@ -3910,24 +3910,43 @@
 
                 try {
                     const doc = nlp(text);
+
+                    // Extract specific entity types using Compromise.js
                     const people = doc.people().out('array');
                     const places = doc.places().out('array');
                     const organizations = doc.organizations().out('array');
+
+                    // Get proper nouns that aren't already in the above categories
                     const properNouns = doc.match('#ProperNoun').out('array');
 
-                    const allEntities = [...people, ...places, ...organizations, ...properNouns];
-                    const uniqueEntities = [...new Set(allEntities)];
+                    // Clean and filter entities
+                    const cleanEntity = (e) => e.trim().replace(/[,\.;:!?]+$/, ''); // Remove trailing punctuation
+                    const isValid = (e) => e.length > 1 && !/^[^a-zA-Z]+$/.test(e); // At least 2 chars and contains letters
+
+                    // Combine and deduplicate (case-insensitive)
+                    const allRaw = [...people, ...places, ...organizations, ...properNouns];
+                    const cleaned = allRaw.map(cleanEntity).filter(isValid);
+                    const lowerMap = new Map();
+                    cleaned.forEach(e => {
+                        const lower = e.toLowerCase();
+                        if (!lowerMap.has(lower)) {
+                            lowerMap.set(lower, e);
+                        }
+                    });
+                    const uniqueEntities = Array.from(lowerMap.values());
+
+                    // Calculate density (per 100 words)
                     const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
 
                     return {
-                        entities: new Set(uniqueEntities.map(e => e.toLowerCase().trim())),
+                        entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
                         entityList: uniqueEntities,
                         count: uniqueEntities.length,
                         density: density,
                         wordCount: wordCount,
-                        people: people,
-                        places: places,
-                        organizations: organizations
+                        people: people.map(cleanEntity).filter(isValid),
+                        places: places.map(cleanEntity).filter(isValid),
+                        organizations: organizations.map(cleanEntity).filter(isValid)
                     };
                 } catch (error) {
                     console.error('Error in NLP-based NER:', error);
@@ -5929,30 +5948,42 @@
                 try {
                     const doc = nlp(text);
 
-                    // Extract different entity types using Compromise.js
+                    // Extract specific entity types using Compromise.js
                     const people = doc.people().out('array');
                     const places = doc.places().out('array');
                     const organizations = doc.organizations().out('array');
 
-                    // Also get general proper nouns that might not be categorized
+                    // Get proper nouns that aren't already in the above categories
                     const properNouns = doc.match('#ProperNoun').out('array');
 
-                    // Combine all entities and deduplicate
-                    const allEntities = [...people, ...places, ...organizations, ...properNouns];
-                    const uniqueEntities = [...new Set(allEntities)];
+                    // Clean and filter entities
+                    const cleanEntity = (e) => e.trim().replace(/[,\.;:!?]+$/, ''); // Remove trailing punctuation
+                    const isValid = (e) => e.length > 1 && !/^[^a-zA-Z]+$/.test(e); // At least 2 chars and contains letters
+
+                    // Combine and deduplicate (case-insensitive)
+                    const allRaw = [...people, ...places, ...organizations, ...properNouns];
+                    const cleaned = allRaw.map(cleanEntity).filter(isValid);
+                    const lowerMap = new Map();
+                    cleaned.forEach(e => {
+                        const lower = e.toLowerCase();
+                        if (!lowerMap.has(lower)) {
+                            lowerMap.set(lower, e);
+                        }
+                    });
+                    const uniqueEntities = Array.from(lowerMap.values());
 
                     // Calculate density (per 100 words)
                     const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
 
                     return {
-                        entities: new Set(uniqueEntities.map(e => e.toLowerCase().trim())),
+                        entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
                         entityList: uniqueEntities,
                         count: uniqueEntities.length,
                         density: density,
                         wordCount: wordCount,
-                        people: people,
-                        places: places,
-                        organizations: organizations
+                        people: people.map(cleanEntity).filter(isValid),
+                        places: places.map(cleanEntity).filter(isValid),
+                        organizations: organizations.map(cleanEntity).filter(isValid)
                     };
                 } catch (error) {
                     console.error('Error in NLP-based NER:', error);
