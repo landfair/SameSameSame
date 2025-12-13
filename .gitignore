@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Data files (may contain sensitive student information)
+*.csv
+
+# Research papers and documentation
+*.pdf
+
+# Screenshots
+*.png
+*.jpg
+
+# Backup files
+*-backup-*.html
+*copy*.html
+*copy.html
+
+# Test files
+test-*.html
+
+# Text clippings
+*.textClipping
+
+# Other
+generate-metrics.txt
