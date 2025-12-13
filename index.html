@@ -1245,7 +1245,7 @@
                         <!-- AI-Powered Semantic Similarity (Transformers.js) -->
                         <div style="margin-top: 20px; padding: 12px; background: #f9f9f9; border-radius: 5px; border: 1px solid #ddd;">
                             <div style="font-size: 12px; color: #666; margin-bottom: 8px;">
-                                <strong>AI Model:</strong> Auto-loading 23 MB model (one-time download, cached in browser)
+                                <strong>AI Model:</strong> Auto-loading 23 MB model (one-time download from CDN)
                             </div>
                             <button onclick="initTransformers()" id="enableTransformersBtn"
                                 style="padding: 8px 16px; background: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-size: 12px; margin-bottom: 8px;">
@@ -1357,7 +1357,7 @@
 
                     <h4 style="color: #57068C; margin-top: 25px;">How It Works</h4>
                     <p style="font-size: 14px; line-height: 1.6; color: #555;">
-                        The analyzer computes pairwise similarity between all responses using 18 distinct metrics, each capturing different
+                        The analyzer computes pairwise similarity between all responses using 21 distinct metrics, each capturing different
                         aspects of textual similarity. All metrics can be enabled/disabled and weighted via Metric Settings.
                     </p>
 
@@ -1542,10 +1542,54 @@
                             <strong>Example:</strong> Text A uses "democracy" clustered in the introduction (bursty, μ=0.8). Text B uses "democracy"
                             evenly throughout (distributed, μ=0.2). Similar burstiness patterns suggest similar organizational strategies or copied structure.
                         </div>
+
+                        <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
+                            <strong>19. AI Semantic Similarity (Transformers.js)</strong> - Uses neural network embeddings to measure semantic meaning similarity.
+                            Detects sophisticated paraphrasing that preserves meaning while changing vocabulary.
+                        </p>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
+                            <strong>Example:</strong> "The economy is improving rapidly" vs. "Economic conditions are getting better quickly" - different words,
+                            same meaning. The AI model recognizes these as semantically equivalent (90%+ similarity).
+                        </div>
+
+                        <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
+                            <strong>20. Syntactic Pattern Similarity (POS Tagging)</strong> - Analyzes sentence structure using part-of-speech tags.
+                            Detects similar grammatical patterns regardless of content.
+                        </p>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
+                            <strong>Example:</strong> "The quick cat jumped" (DET-ADJ-NOUN-VERB) vs. "A fast dog ran" (DET-ADJ-NOUN-VERB) - same syntactic
+                            structure. LLMs often produce texts with eerily similar sentence structures.
+                        </div>
+
+                        <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
+                            <strong>21. Function Word Distribution (NLP)</strong> - Measures similarity in usage of grammatical "glue words" (the, of, and, to, etc.).
+                            Reveals unconscious stylistic patterns that are hard to fake.
+                        </p>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
+                            <strong>Example:</strong> Both texts use "the" at 5.1%, "of" at 3.2%, "and" at 2.8% - such precise alignment across dozens of function
+                            words is statistically improbable for independent writers. LLMs have characteristic function word patterns.
+                        </div>
+                    </div>
+
+                    <h5 style="color: #57068C; margin-top: 20px; margin-bottom: 10px; font-size: 15px;">Libraries & Technologies</h5>
+
+                    <div style="margin-left: 15px;">
+                        <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
+                            <strong>Compromise.js</strong> - Bundled locally (322 KB). Provides POS tagging and NLP analysis for syntactic patterns
+                            and function word detection. No external network request required.
+                        </p>
+                        <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
+                            <strong>Transformers.js</strong> - Downloads AI model from CDN (23 MB, one-time, cached by browser). Uses the
+                            Xenova/all-MiniLM-L6-v2 model for semantic similarity analysis.
+                        </p>
+                        <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
+                            <strong>Web Workers</strong> - Parallel processing for performance. Metrics that require NLP libraries (Compromise.js)
+                            run in the main thread to access the libraries.
+                        </p>
                     </div>
 
                     <p style="font-size: 13px; line-height: 1.6; color: #555; margin-top: 20px; font-style: italic;">
-                        All 18 metrics are combined using weighted averaging with min-max normalization. Configure which metrics to use
+                        All 21 metrics are combined using weighted averaging with min-max normalization. Configure which metrics to use
                         and their relative weights via the Metric Settings button in the header menu.
                     </p>
 
@@ -1870,7 +1914,7 @@
 
             try {
                 if (statusDiv) {
-                    statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading AI model (23 MB, one-time)...';
+                    statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading AI model from CDN (23 MB, one-time, cached by browser)...';
                     statusDiv.style.color = '#f39c12';
                 }
 
@@ -5066,7 +5110,7 @@
                         <strong>Model:</strong> Xenova/all-MiniLM-L6-v2<br>
                         <strong>Vector Dimensions:</strong> 384<br>
                         <strong>Training Data:</strong> 1B+ sentence pairs<br>
-                        <strong>Model Size:</strong> 23 MB (cached in browser)<br>
+                        <strong>Model Size:</strong> 23 MB (downloaded from CDN, cached by browser)<br>
                         <strong>Processing Time:</strong> ~200ms per comparison
                     </p>
                 </div>
