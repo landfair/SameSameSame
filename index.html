@@ -999,7 +999,7 @@
                     <div style="margin-bottom: 20px; padding: 12px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px;">
                         <strong style="color: #1565c0;">Weight Guidelines:</strong>
                         <div style="font-size: 12px; color: #555; margin-top: 5px;">
-                            High (3.0+): Strong evidence of copying/paraphrasing (fuzzy matching, n-grams)<br>
+                            High (3.0+): Precise textual overlap (fuzzy matching, n-grams)<br>
                             Medium (1.0): Content similarity (cosine, Jaccard, NER)<br>
                             Low (0.3): Structural similarity (word count, sentence length)
                         </div>
@@ -1161,7 +1161,7 @@
                             <input type="checkbox" id="metric_wordNgram" checked onchange="toggleMetricWeight('wordNgram')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>3-Word Phrases</strong>
-                                <div style="font-size: 12px; color: #666;">Word-level n-grams - MEDIUM-HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">Word-level n-gram overlap</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1191,7 +1191,7 @@
                             <input type="checkbox" id="metric_ngram5" checked onchange="toggleMetricWeight('ngram5')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>N-gram 5-char</strong>
-                                <div style="font-size: 12px; color: #666;">5-character sequences - MEDIUM-HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">5-character sequence overlap</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1221,7 +1221,7 @@
                             <input type="checkbox" id="metric_fuzzyNgram3" onchange="toggleMetricWeight('fuzzyNgram3')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Fuzzy 3-Word Phrases</strong>
-                                <div style="font-size: 12px; color: #666;">Levenshtein ≤5 edits - catches short paraphrasing - MEDIUM-HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">Levenshtein ≤5 edits on 3-word sequences</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1236,7 +1236,7 @@
                             <input type="checkbox" id="metric_fuzzyNgram6" onchange="toggleMetricWeight('fuzzyNgram6')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Fuzzy 6-Word Phrases</strong>
-                                <div style="font-size: 12px; color: #666;">Levenshtein ≤13 edits - detects longer paraphrasing - MEDIUM-HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">Levenshtein ≤13 edits on 6-word sequences</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1251,7 +1251,7 @@
                             <input type="checkbox" id="metric_wordLevelFuzzy3" checked onchange="toggleMetricWeight('wordLevelFuzzy3')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Word-Level 3-Word Phrases</strong>
-                                <div style="font-size: 12px; color: #666;">Word substitutions ≤1 - catches "helping" → "aiding" - VERY HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">Word substitutions ≤1 in 3-word sequences</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1266,7 +1266,7 @@
                             <input type="checkbox" id="metric_wordLevelFuzzy5" checked onchange="toggleMetricWeight('wordLevelFuzzy5')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Word-Level 5-Word Phrases</strong>
-                                <div style="font-size: 12px; color: #666;">Word substitutions ≤2 - detects phrase-level paraphrasing - VERY HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">Word substitutions ≤2 in 5-word sequences</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1295,7 +1295,7 @@
                             <input type="checkbox" id="metric_transformerSemantic" disabled onchange="toggleMetricWeight('transformerSemantic')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong><i class="fas fa-sparkles" style="color: #ffd700; margin-right: 6px;"></i>Transformer Semantic Similarity</strong>
-                                <div style="font-size: 12px; color: #666;">Detects semantic paraphrasing using AI - VERY HIGH signal</div>
+                                <div style="font-size: 12px; color: #666;">AI-powered semantic meaning comparison using neural networks</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1310,7 +1310,7 @@
                             <input type="checkbox" id="metric_posSyntactic" checked onchange="toggleMetricWeight('posSyntactic')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Syntactic Pattern Similarity</strong>
-                                <div style="font-size: 12px; color: #666;">Detects similar sentence structures using POS tags - HIGH signal for style convergence</div>
+                                <div style="font-size: 12px; color: #666;">Sentence structure comparison using part-of-speech tagging</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1325,7 +1325,7 @@
                             <input type="checkbox" id="metric_functionWordDist" checked onchange="toggleMetricWeight('functionWordDist')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Function Word Distribution (NLP)</strong>
-                                <div style="font-size: 12px; color: #666;">Uses POS tagging to detect stylistic convergence in grammatical words - HIGH signal for AI use</div>
+                                <div style="font-size: 12px; color: #666;">Grammatical word usage patterns using POS tagging</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
                                 <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
@@ -1384,10 +1384,9 @@
                         <li><strong>Narrow focus:</strong> Only detects one specific source (e.g., AI) rather than any form of similarity</li>
                     </ul>
                     <p style="font-size: 14px; line-height: 1.6; color: #555;">
-                        <strong>Homogeneity analysis is different:</strong> It doesn't care <em>why</em> responses are similar—whether from
-                        AI use, copying, collaboration, or shared sources. It simply identifies pairs showing unusual convergence in vocabulary,
-                        phrasing, and structure. This makes it model-agnostic, future-proof, and equally effective at catching copying between
-                        humans as AI-assisted writing.
+                        <strong>Homogeneity analysis is different:</strong> It doesn't make claims about <em>why</em> responses are similar.
+                        It objectively measures pairwise similarity across multiple dimensions of text, identifying pairs showing unusual convergence
+                        in vocabulary, phrasing, and structure. This makes it model-agnostic and applicable to any text corpus.
                     </p>
 
                     <h4 style="color: #57068C; margin-top: 25px;">How It Works</h4>
@@ -1441,7 +1440,7 @@
                             <strong>5. N-gram Similarity (5-character)</strong> - Uses 5-character sequences for even more specific pattern matching.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> Useful for detecting copy-paste of unique phrases or technical terms like "photosynthesis."
+                            <strong>Example:</strong> Identifies overlap in unique phrases or technical terms like "photosynthesis."
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
@@ -1457,21 +1456,19 @@
 
                     <div style="margin-left: 15px;">
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
-                            <strong>7. Word N-gram (3-word phrases)</strong> - Identifies shared 3-word sequences. Excellent for detecting copied phrases
-                            and sentence fragments.
+                            <strong>7. Word N-gram (3-word phrases)</strong> - Identifies shared 3-word sequences.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> "In other words" appears in both texts. "The main argument" appears in both. Indicates
-                            similar phrasing patterns or direct copying.
+                            <strong>Example:</strong> "In other words" appears in both texts. "The main argument" appears in both.
                         </div>
                     </div>
 
-                    <h5 style="color: #57068C; margin-top: 20px; margin-bottom: 10px; font-size: 15px;">Fuzzy Matching Metrics (Paraphrase Detection)</h5>
+                    <h5 style="color: #57068C; margin-top: 20px; margin-bottom: 10px; font-size: 15px;">Fuzzy Matching Metrics (Approximate String Matching)</h5>
 
                     <div style="margin-left: 15px;">
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
                             <strong>8. Fuzzy N-gram (3-word phrases, ≤5 character edits)</strong> - Compares 3-word phrases allowing up to 5 character
-                            differences via Levenshtein distance. Catches light paraphrasing.
+                            differences via Levenshtein distance.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> "the primary argument" matches "the main argument" (5 character changes: "primary" → "main").
@@ -1479,7 +1476,6 @@
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
                             <strong>9. Fuzzy N-gram (6-word phrases, ≤13 character edits)</strong> - Longer phrases with more tolerance for changes.
-                            Detects more extensive paraphrasing.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> "In conclusion we can see that education" matches "In summary we observe that schooling"
@@ -1488,7 +1484,7 @@
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
                             <strong>10. Word-Level Fuzzy (3-word phrases, ≤1 word substitution)</strong> - Compares 3-word phrases allowing exactly
-                            1 word to differ. Detects single-word paraphrasing.
+                            1 word to differ.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> "climate change impacts" matches "climate change effects" (1 word different: impacts → effects).
@@ -1496,7 +1492,7 @@
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
                             <strong>11. Word-Level Fuzzy (5-word phrases, ≤2 word substitutions)</strong> - Longer phrases allowing up to 2 words
-                            to differ. Catches multi-word paraphrasing.
+                            to differ.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> "the study reveals important findings about" matches "this research shows significant results regarding"
@@ -1521,8 +1517,7 @@
                             and complexity.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> Text A averages 18.3 words/sentence, Text B averages 18.7 words/sentence. Similar sentence
-                            length patterns suggest similar writing styles or shared sources.
+                            <strong>Example:</strong> Text A averages 18.3 words/sentence, Text B averages 18.7 words/sentence.
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
@@ -1543,8 +1538,7 @@
                             Reflects perspective and voice.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> Text A: 12% pronouns (first-person narrative). Text B: 2% pronouns (formal academic). Very different
-                            writing styles. Similarity indicates shared voice or perspective.
+                            <strong>Example:</strong> Text A: 12% pronouns (first-person narrative). Text B: 2% pronouns (formal academic).
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
@@ -1552,8 +1546,7 @@
                             for example, in other words, etc.). Reflects rhetorical sophistication and organization.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> Text A uses 15 transition phrases in 500 words (3.0%). Text B uses 14 in 480 words (2.9%). Similar
-                            usage patterns suggest similar rhetorical training or shared source material.
+                            <strong>Example:</strong> Text A uses 15 transition phrases in 500 words (3.0%). Text B uses 14 in 480 words (2.9%).
                         </div>
                     </div>
 
@@ -1562,11 +1555,9 @@
                     <div style="margin-left: 15px;">
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
                             <strong>17. Named Entity Recognition (NER)</strong> - Identifies and compares proper nouns (people, places, organizations).
-                            Shared entities indicate common source material or topics.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> Both texts mention "Stanford University," "John Dewey," and "Department of Education." High entity
-                            overlap suggests citing the same sources or discussing identical examples.
+                            <strong>Example:</strong> Both texts mention "Stanford University," "John Dewey," and "Department of Education."
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
@@ -1575,12 +1566,12 @@
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> Text A uses "democracy" clustered in the introduction (bursty, μ=0.8). Text B uses "democracy"
-                            evenly throughout (distributed, μ=0.2). Similar burstiness patterns suggest similar organizational strategies or copied structure.
+                            evenly throughout (distributed, μ=0.2).
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
-                            <strong>19. AI Semantic Similarity (Transformers.js)</strong> - Uses neural network embeddings to measure semantic meaning similarity.
-                            Detects sophisticated paraphrasing that preserves meaning while changing vocabulary.
+                            <strong>19. AI Semantic Similarity (Transformers.js)</strong> - Uses neural network embeddings to measure semantic meaning similarity
+                            independent of vocabulary overlap.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> "The economy is improving rapidly" vs. "Economic conditions are getting better quickly" - different words,
@@ -1588,21 +1579,19 @@
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
-                            <strong>20. Syntactic Pattern Similarity (POS Tagging)</strong> - Analyzes sentence structure using part-of-speech tags.
-                            Detects similar grammatical patterns regardless of content.
+                            <strong>20. Syntactic Pattern Similarity (POS Tagging)</strong> - Analyzes sentence structure using part-of-speech tags to measure
+                            grammatical pattern overlap.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
                             <strong>Example:</strong> "The quick cat jumped" (DET-ADJ-NOUN-VERB) vs. "A fast dog ran" (DET-ADJ-NOUN-VERB) - same syntactic
-                            structure. LLMs often produce texts with eerily similar sentence structures.
+                            structure pattern.
                         </div>
 
                         <p style="font-size: 13px; line-height: 1.6; color: #555; margin-bottom: 10px;">
                             <strong>21. Function Word Distribution (NLP)</strong> - Measures similarity in usage of grammatical "glue words" (the, of, and, to, etc.).
-                            Reveals unconscious stylistic patterns that are hard to fake.
                         </p>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; color: #666;">
-                            <strong>Example:</strong> Both texts use "the" at 5.1%, "of" at 3.2%, "and" at 2.8% - such precise alignment across dozens of function
-                            words is statistically improbable for independent writers. LLMs have characteristic function word patterns.
+                            <strong>Example:</strong> Both texts use "the" at 5.1%, "of" at 3.2%, "and" at 2.8%.
                         </div>
                     </div>
 
@@ -3413,13 +3402,13 @@
                 'N-gram 4-char': '4-character sequences (click to see patterns)',
                 'N-gram 5-char': '5-character sequences (click to see patterns)',
                 'Named Entity Recognition': 'Named entity similarity (people, places, organizations) - click for breakdown',
-                'Fuzzy 3-Word Phrases': 'Levenshtein ≤5 edits on 3-word phrases - catches short paraphrasing (click for details)',
-                'Fuzzy 6-Word Phrases': 'Levenshtein ≤13 edits on 6-word phrases - detects longer paraphrasing (click for details)',
-                'Word-Level 3-Word': 'Word substitutions ≤1 - detects single word changes (click for details)',
-                'Word-Level 5-Word': 'Word substitutions ≤2 - detects multi-word paraphrasing (click for details)',
-                '<i class="fas fa-sparkles" style="color: #ffd700;"></i> AI Semantic Similarity': 'AI-powered semantic meaning comparison using transformer neural networks - detects sophisticated paraphrasing (click for technical details)',
-                'Syntactic Pattern': 'Sentence structure similarity using part-of-speech patterns - detects similar writing style regardless of content (click for details)',
-                'Function Word Dist': 'Function word usage patterns (the, of, and, etc.) - reveals stylistic convergence independent of topic (click for details)'
+                'Fuzzy 3-Word Phrases': 'Levenshtein ≤5 edits on 3-word phrases (click for details)',
+                'Fuzzy 6-Word Phrases': 'Levenshtein ≤13 edits on 6-word phrases (click for details)',
+                'Word-Level 3-Word': 'Word substitutions ≤1 in 3-word sequences (click for details)',
+                'Word-Level 5-Word': 'Word substitutions ≤2 in 5-word sequences (click for details)',
+                '<i class="fas fa-sparkles" style="color: #ffd700;"></i> AI Semantic Similarity': 'AI-powered semantic meaning comparison using transformer neural networks (click for technical details)',
+                'Syntactic Pattern': 'Sentence structure similarity using part-of-speech patterns (click for details)',
+                'Function Word Dist': 'Function word usage patterns (the, of, and, etc.) - click for details'
             };
 
             const selectedNames = selectedIds.map(id => metricIdToName[id]).filter(n => n);
@@ -3793,7 +3782,7 @@
             return `
                 <div style="background: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
                     <h3 style="margin: 0 0 10px 0;">N-gram 4-char Similarity (4-character sequences)</h3>
-                    <p>Uses <strong>4-character n-grams</strong> instead of 3. Longer n-grams are more specific and less likely to match by chance, making them better at detecting deliberate copying or template use.</p>
+                    <p>Uses <strong>4-character n-grams</strong> instead of 3. Longer n-grams are more specific and less likely to match by chance.</p>
                     <p style="font-family: monospace; background: white; padding: 10px; border-radius: 3px; margin: 10px 0 0 0;">
                         similarity = |shared 4-grams| / |total unique 4-grams|
                     </p>
@@ -4120,12 +4109,12 @@
             return `
                 <div style="background: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
                     <h3 style="margin: 0 0 10px 0;">Fuzzy 3-Word Phrase Matching (Levenshtein Distance)</h3>
-                    <p>Uses the Levenshtein distance algorithm to detect paraphrasing by finding 3-word phrases that are nearly identical with minor word substitutions. Based on MIT 2024 study's n-gram analysis approach.</p>
+                    <p>Uses the Levenshtein distance algorithm to find 3-word phrases that are similar with minor character-level edits. Based on MIT 2024 study's n-gram analysis approach.</p>
                     <div style="background: #fff3cd; padding: 10px; border-radius: 5px; margin: 10px 0;">
                         <strong>Algorithm:</strong> Levenshtein distance measures the minimum number of single-character edits (insertions, deletions, substitutions) needed to transform one string into another. We apply this to 3-word phrases with a maximum edit distance of ${maxDistance}.
                     </div>
                     <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0;">
-                        <strong>Why This Matters:</strong> Catches short paraphrasing like "helping students learn" vs "aiding students learn" or "working with people" vs "working with individuals"
+                        <strong>Example:</strong> "helping students learn" vs "aiding students learn" or "working with people" vs "working with individuals"
                     </div>
                 </div>
 
@@ -4175,7 +4164,7 @@
                 ${fuzzyMatches.length > 0 ? `
                 <div style="background: #fff3e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
                     <h4 style="margin: 0 0 15px 0; color: #e65100;">⚡ Fuzzy Matches (${fuzzyMatches.length})</h4>
-                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">Similar phrases with edit distance ≤ ${maxDistance} (potential paraphrasing)</p>
+                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">Similar phrases with edit distance ≤ ${maxDistance}</p>
                     <div style="max-height: 400px; overflow-y: auto;">
                         ${fuzzyMatches.slice(0, 50).map(match => `
                             <div style="background: #fff8e1; padding: 10px 12px; margin: 8px 0; border-radius: 4px; border-left: 4px solid #ff9800;">
@@ -4315,7 +4304,7 @@
                 ${fuzzyMatches.length > 0 ? `
                 <div style="background: #fff3e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
                     <h4 style="margin: 0 0 15px 0; color: #e65100;">⚡ Fuzzy Matches (${fuzzyMatches.length})</h4>
-                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">Similar phrases with edit distance ≤ ${maxDistance} (potential paraphrasing)</p>
+                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">Similar phrases with edit distance ≤ ${maxDistance}</p>
                     <div style="max-height: 400px; overflow-y: auto;">
                         ${fuzzyMatches.slice(0, 50).map(match => `
                             <div style="background: #fff8e1; padding: 10px 12px; margin: 8px 0; border-radius: 4px; border-left: 4px solid #ff9800;">
