@@ -908,7 +908,35 @@
                 <h1 style="color: #57068C; font-size: 32px; margin-bottom: 16px; font-weight: 600;">Welcome to The Homogenometry Dashboard</h1>
                 <p style="color: #666; font-size: 18px; line-height: 1.6; margin-bottom: 40px;">
                     Analyze corpus-internal homogeneity by measuring pairwise similarity between responses.
-                    For detecting unusual convergence in survey responses, essays, homework exercises, or any other corpus of texts. 
+                    For detecting unusual convergence in survey responses, essays, homework exercises, or any other corpus of texts.
+                </p>
+                <button onclick="showMetricSelection()"
+                    style="padding: 16px 40px; background: #57068C; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 18px; box-shadow: 0 4px 12px rgba(87, 6, 140, 0.3); transition: all 0.3s;"
+                    onmouseover="this.style.background='#6d0aac'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(87, 6, 140, 0.4)'"
+                    onmouseout="this.style.background='#57068C'; this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(87, 6, 140, 0.3)'">
+                    <i class="fas fa-sliders-h"></i> Choose Similarity Metrics
+                </button>
+                <div style="margin-top: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3; text-align: left;">
+                    <h4 style="margin-top: 0; color: #1565c0; font-size: 16px;">Getting Started</h4>
+                    <ol style="color: #666; font-size: 14px; line-height: 1.8; margin: 10px 0;">
+                        <li><strong>Choose which similarity metrics</strong> you want to use (21 available)</li>
+                        <li><strong>Upload your CSV file</strong> with text responses</li>
+                        <li><strong>Review results</strong> showing suspicious similarity patterns</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload Prompt Screen (shown after metrics selected) -->
+        <div id="uploadPromptScreen" style="display: none; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; text-align: center; padding: 40px 20px;">
+            <div style="max-width: 600px;">
+                <div style="font-size: 48px; margin-bottom: 20px; color: #4caf50;">✓</div>
+                <h2 style="color: #57068C; font-size: 28px; margin-bottom: 16px; font-weight: 600;">Metrics Configured</h2>
+                <p style="color: #666; font-size: 16px; line-height: 1.6; margin-bottom: 20px;">
+                    <span id="selectedMetricCount">0</span> metrics selected and ready to analyze.
+                </p>
+                <p style="color: #666; font-size: 18px; line-height: 1.6; margin-bottom: 40px;">
+                    Now upload your CSV file to begin analysis.
                 </p>
                 <button onclick="document.getElementById('csvFile').click()"
                     style="padding: 16px 40px; background: #57068C; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 18px; box-shadow: 0 4px 12px rgba(87, 6, 140, 0.3); transition: all 0.3s;"
@@ -924,6 +952,12 @@
                         <li>Include one or more text response columns to analyze</li>
                         <li>UTF-8 encoding recommended for special characters</li>
                     </ul>
+                </div>
+                <div style="margin-top: 20px;">
+                    <button onclick="showMetricSelection()"
+                        style="padding: 8px 20px; background: transparent; color: #57068C; border: 2px solid #57068C; border-radius: 5px; cursor: pointer; font-weight: 600;">
+                        <i class="fas fa-edit"></i> Change Metrics
+                    </button>
                 </div>
             </div>
         </div>
@@ -1303,13 +1337,14 @@
                     </div>
 
                     <div style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
-                        <div style="font-size: 13px; color: #666; font-style: italic;">
-                            Click "Apply Metrics" to recalculate with your selected metrics
+                        <div id="metricModalFooterText" style="font-size: 13px; color: #666; font-style: italic;">
+                            Select your metrics and click "Continue" to proceed
                         </div>
                         <div style="display: flex; gap: 10px;">
                             <button onclick="saveMetricSettings()"
+                                id="metricApplyBtn"
                                 style="padding: 10px 24px; background: #57068C; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
-                                Apply Metrics
+                                Continue
                             </button>
                             <button onclick="toggleMetricSettings()"
                                 style="padding: 10px 24px; background: #95a5a6; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 14px;">
@@ -2369,8 +2404,9 @@
                         document.getElementById('thresholdDisplay').textContent = savedThreshold;
                     }
 
-                    // Hide welcome screen and show app interface
+                    // Hide welcome/upload screens and show app interface
                     document.getElementById('welcomeScreen').style.display = 'none';
+                    document.getElementById('uploadPromptScreen').style.display = 'none';
                     document.getElementById('controls').style.display = 'block';
                     document.getElementById('dashboard').style.display = 'block';
 
@@ -2568,8 +2604,9 @@
 
             currentColumn = 1;
 
-            // Hide welcome screen and show app interface
+            // Hide welcome/upload screens and show app interface
             document.getElementById('welcomeScreen').style.display = 'none';
+            document.getElementById('uploadPromptScreen').style.display = 'none';
             document.getElementById('controls').style.display = 'block';
             document.getElementById('dashboard').style.display = 'block';
 
@@ -3095,9 +3132,67 @@
         function toggleMetricSettings() {
             const modal = document.getElementById('metricSettings');
             if (modal.style.display === 'none' || modal.style.display === '') {
+                // Update button text and footer message based on CSV loaded state
+                const csvLoaded = csvData && csvData.length > 0;
+                const applyBtn = document.getElementById('metricApplyBtn');
+                const footerText = document.getElementById('metricModalFooterText');
+
+                if (applyBtn) {
+                    applyBtn.textContent = csvLoaded ? 'Apply Metrics' : 'Continue';
+                }
+                if (footerText) {
+                    footerText.textContent = csvLoaded
+                        ? 'Click "Apply Metrics" to recalculate with your selected metrics'
+                        : 'Select your metrics and click "Continue" to proceed';
+                }
+
                 modal.style.display = 'flex';
             } else {
                 modal.style.display = 'none';
+                // If CSV not loaded yet, show the upload prompt screen
+                if (!csvData || csvData.length === 0) {
+                    updateUploadPromptScreen();
+                }
+            }
+        }
+
+        function showMetricSelection() {
+            // Open metric settings modal from welcome screen
+            toggleMetricSettings();
+        }
+
+        function updateUploadPromptScreen() {
+            // Count selected metrics
+            const selectedMetrics = getSelectedMetrics();
+            const count = selectedMetrics.length;
+
+            // Update the count display
+            const countElement = document.getElementById('selectedMetricCount');
+            if (countElement) {
+                countElement.textContent = count;
+            }
+
+            // Hide welcome screen and show upload prompt
+            document.getElementById('welcomeScreen').style.display = 'none';
+            document.getElementById('uploadPromptScreen').style.display = 'flex';
+
+            // If transformerSemantic is selected, start loading the model early
+            if (selectedMetrics.includes('transformerSemantic')) {
+                preloadTransformerModel();
+            }
+        }
+
+        async function preloadTransformerModel() {
+            // Start loading the Transformers.js model early
+            if (!window.transformerPipeline && typeof window.transformers !== 'undefined') {
+                console.log('Preloading Transformer model...');
+                try {
+                    const { pipeline } = window.transformers;
+                    window.transformerPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+                    console.log('Transformer model preloaded successfully');
+                } catch (error) {
+                    console.error('Error preloading Transformer model:', error);
+                }
             }
         }
 
