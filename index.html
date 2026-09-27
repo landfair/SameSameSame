@@ -11933,6 +11933,11 @@
             ctx.fillText('Similarity Component 2', 0, 0);
             ctx.restore();
 
+            // Keep the unscaled MDS coordinates: redrawing has to re-scale from these, not
+            // from the screen positions below. scaleY inverts, so feeding screen coordinates
+            // back through it flips the plot vertically on every redraw.
+            window.visualizationCoordinates = coordinates;
+
             // Store scaled points for interactivity
             window.visualizationPoints = coordinates.map((coord, i) => ({
                 x: scaleX(coord.x),
@@ -12097,12 +12102,8 @@
             const height = canvas.height;
             const padding = 60;
 
-            // Clear and redraw everything
-            const coordinates = window.visualizationPoints.map(p => ({ x: p.x, y: p.y }));
-            drawScatterPlot(canvas, ctx, coordinates.map((c, i) => ({
-                x: window.visualizationPoints[i].x,
-                y: window.visualizationPoints[i].y
-            })));
+            // Clear and redraw from the original MDS coordinates.
+            drawScatterPlot(canvas, ctx, window.visualizationCoordinates);
 
             // Highlight selected point
             if (selectedPoint) {
