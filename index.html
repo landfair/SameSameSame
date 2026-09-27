@@ -1707,6 +1707,49 @@
                             </div>
                         </div>
 
+                        <!-- POS 4-gram Templates -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
+                            <input type="checkbox" id="metric_posTemplate4" checked onchange="toggleMetricWeight('posTemplate4')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>POS 4-gram Templates</strong>
+                                <div style="font-size: 12px; color: #666;">Four-tag part-of-speech sequences, weighted by how rare each is in the class</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_posTemplate4" min="0.1" max="5.0" step="0.1" value="2.5"
+                                       style="flex: 1;" oninput="updateWeightDisplay('posTemplate4', this.value)">
+                                <span id="weightDisplay_posTemplate4" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.5</span>
+                            </div>
+                        </div>
+                        <!-- POS 6-gram Templates -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
+                            <input type="checkbox" id="metric_posTemplate6" checked onchange="toggleMetricWeight('posTemplate6')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>POS 6-gram Templates</strong>
+                                <div style="font-size: 12px; color: #666;">Six-tag sequences; closer to the templates in Shaib et al. (2024), weighted by rarity</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_posTemplate6" min="0.1" max="5.0" step="0.1" value="2.5"
+                                       style="flex: 1;" oninput="updateWeightDisplay('posTemplate6', this.value)">
+                                <span id="weightDisplay_posTemplate6" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.5</span>
+                            </div>
+                        </div>
+                        <!-- Argument Path -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
+                            <input type="checkbox" id="metric_argumentPath"  onchange="toggleMetricWeight('argumentPath')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Argument Path</strong>
+                                <div style="font-size: 12px; color: #666;">Whether the two responses move through their argument in the same order. Needs the semantic model.</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_argumentPath" min="0.1" max="5.0" step="0.1" value="2.0"
+                                       style="flex: 1;" oninput="updateWeightDisplay('argumentPath', this.value)">
+                                <span id="weightDisplay_argumentPath" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.0</span>
+                            </div>
+                        </div>
+
                         <!-- Shared Rare Phrases -->
                         <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
                             <input type="checkbox" id="metric_rareNgram" checked onchange="toggleMetricWeight('rareNgram')">
@@ -2640,7 +2683,8 @@
             if (posTagCache.size >= POS_CACHE_LIMIT) posTagCache.clear();
 
             entry = { penn: null, simple: null, functionWords: null, rareNgrams: null,
-                      styleProfile: null, contentProfile: null, ngrams: new Map() };
+                      styleProfile: null, contentProfile: null, posTemplates: null,
+                      ngrams: new Map() };
             posTagCache.set(text, entry);
             return entry;
         }
@@ -3023,7 +3067,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 13; // Increment this when adding new metrics (v13 = rarity-weighted entities and vocabulary)
+        const METRIC_VERSION = 14; // Increment this when adding new metrics (v14 = rarity-weighted POS templates, argument path)
 
         // ========== HEADER MENU ==========
 
@@ -4136,6 +4180,17 @@
                     case 'distinctiveVocab':
                         metrics.distinctiveVocab = distinctiveVocabularySimilarity(text1, text2);
                         break;
+                    case 'posTemplate4':
+                        metrics.posTemplate4 = posTemplateSimilarity(text1, text2, 4);
+                        break;
+                    case 'posTemplate6':
+                        metrics.posTemplate6 = posTemplateSimilarity(text1, text2, 6);
+                        break;
+                    case 'argumentPath': {
+                        const path = argumentPathSimilarity(text1, text2);
+                        if (path !== null) metrics.argumentPath = path;
+                        break;
+                    }
                     case 'burrowsDeltaTopicAgnostic':
                         metrics.burrowsDeltaTopicAgnostic = calculateTopicAgnosticBurrowsDelta(text1, text2);
                         break;
@@ -4262,7 +4317,8 @@
                               'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
                               'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
                               'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
-                              'sharedEntities', 'distinctiveVocab'];
+                              'sharedEntities', 'distinctiveVocab',
+                              'posTemplate4', 'posTemplate6', 'argumentPath'];
             return metricIds.filter(id => {
                 const checkbox = document.getElementById('metric_' + id);
                 return checkbox && checkbox.checked;
@@ -4376,7 +4432,8 @@
                               'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5',
                               'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
                               'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
-                              'sharedEntities', 'distinctiveVocab'];
+                              'sharedEntities', 'distinctiveVocab',
+                              'posTemplate4', 'posTemplate6', 'argumentPath'];
 
             metricIds.forEach(id => {
                 const slider = document.getElementById(`weight_${id}`);
@@ -4419,7 +4476,8 @@
                                   'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
                                   'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
                               'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
-                              'sharedEntities', 'distinctiveVocab'];
+                              'sharedEntities', 'distinctiveVocab',
+                              'posTemplate4', 'posTemplate6', 'argumentPath'];
                 metricIds.forEach(id => {
                     const checkbox = document.getElementById('metric_' + id);
                     if (checkbox) {
@@ -4603,6 +4661,17 @@
                     case 'distinctiveVocab':
                         metricValues['Distinctive Vocabulary'] = distinctiveVocabularySimilarity(text1, text2);
                         break;
+                    case 'posTemplate4':
+                        metricValues['POS 4-gram Templates'] = posTemplateSimilarity(text1, text2, 4);
+                        break;
+                    case 'posTemplate6':
+                        metricValues['POS 6-gram Templates'] = posTemplateSimilarity(text1, text2, 6);
+                        break;
+                    case 'argumentPath': {
+                        const v = argumentPathSimilarity(text1, text2);
+                        if (v !== null) metricValues['Argument Path'] = v;
+                        break;
+                    }
                 }
             }
 
@@ -4651,7 +4720,10 @@
                 'transitionChoice': 'Which Transitions',
                 'sentenceOpeners': 'Sentence Openers',
                 'sharedEntities': 'Shared Names and Figures',
-                'distinctiveVocab': 'Distinctive Vocabulary'
+                'distinctiveVocab': 'Distinctive Vocabulary',
+                'posTemplate4': 'POS 4-gram Templates',
+                'posTemplate6': 'POS 6-gram Templates',
+                'argumentPath': 'Argument Path'
             };
 
             const metricTooltips = {
@@ -9390,6 +9462,103 @@
         }
 
         // ============================================================================
+        // SYNTACTIC TEMPLATES AND ARGUMENT PATH
+        // ============================================================================
+        //
+        // The existing Shaib metrics compare POS n-gram SETS with a Jaccard index. With a tag
+        // vocabulary this small, two responses of any length share most common trigrams whoever
+        // wrote them, so those sets are close to saturated and the measure says little.
+        //
+        // Shaib et al.'s actual finding is about frequency against a baseline: models reuse a
+        // handful of syntactic templates far more often than human writers do. What matters is
+        // therefore not whether two responses share a template, but whether they share one that
+        // is rare in this cohort - the same rarity argument the content family rests on, applied
+        // to sentence shapes instead of words. These metrics weight each shared template by
+        // log(N/df), so a template everyone uses counts for nothing.
+
+        let posTemplateStats = null;
+
+        const POS_TEMPLATE_SIZES = [4, 6];
+
+        function posTemplateCounts(text, n) {
+            const entry = posCacheEntry(text);
+            if (!entry.posTemplates) entry.posTemplates = new Map();
+            const cached = entry.posTemplates.get(n);
+            if (cached) return cached;
+
+            const tags = pennTagSequence(text);
+            const counts = new Map();
+            for (let i = 0; i <= tags.length - n; i++) {
+                const key = tags.slice(i, i + n).join(' ');
+                counts.set(key, (counts.get(key) || 0) + 1);
+            }
+            entry.posTemplates.set(n, counts);
+            return counts;
+        }
+
+        function buildPosTemplateStats(texts) {
+            const bySize = {};
+            POS_TEMPLATE_SIZES.forEach(n => {
+                const df = new Map();
+                texts.forEach(t => posTemplateCounts(t, n).forEach((_, key) => df.set(key, (df.get(key) || 0) + 1)));
+                bySize[n] = df;
+            });
+            return { total: texts.length, bySize };
+        }
+
+        function posTemplateSimilarity(text1, text2, n) {
+            if (!posTemplateStats) return 0;
+            return idfWeightedCosine(posTemplateCounts(text1, n), posTemplateCounts(text2, n),
+                                     posTemplateStats.bySize[n], posTemplateStats.total);
+        }
+
+        // Do two responses move through their argument in the same order?
+        //
+        // Best-match paragraph alignment already asks whether the same passages appear. This
+        // asks whether they appear in the same sequence, by finding the highest-scoring
+        // monotonic alignment between the two chunk lists - the same dynamic program used to
+        // align biological sequences, over passage similarities rather than residues.
+        //
+        // Chatbot responses to one prompt tend to take nearly the same route through an
+        // argument even when the wording differs completely, which is exactly what neither
+        // wording nor bag-of-passages similarity captures.
+        function orderedAlignmentScore(chunksA, chunksB) {
+            const m = chunksA.length, n = chunksB.length;
+            if (!m || !n) return 0;
+
+            // Similarity between every pair of passages.
+            const S = [];
+            for (let i = 0; i < m; i++) {
+                const row = new Float64Array(n);
+                for (let j = 0; j < n; j++) row[j] = dotProduct(chunksA[i], chunksB[j]);
+                S.push(row);
+            }
+
+            const D = Array.from({ length: m + 1 }, () => new Float64Array(n + 1));
+            for (let i = 1; i <= m; i++) {
+                for (let j = 1; j <= n; j++) {
+                    // Only positive similarity is worth aligning; a negative match should not be
+                    // preferred over skipping a passage.
+                    const diagonal = D[i - 1][j - 1] + Math.max(0, S[i - 1][j - 1]);
+                    D[i][j] = Math.max(diagonal, D[i - 1][j], D[i][j - 1]);
+                }
+            }
+
+            // Normalised by sqrt(m*n) so a long pair cannot score highly just by having more
+            // passages to match, then mapped onto [0,1].
+            const score = D[m][n] / Math.sqrt(m * n);
+            return Math.min(1, Math.max(0, score));
+        }
+
+        function argumentPathSimilarity(text1, text2) {
+            if (!semanticIndex) return null; // needs the embeddings; reported as absent, not zero
+            const a = semanticIndex.byText.get(text1);
+            const b = semanticIndex.byText.get(text2);
+            if (!a || !b) return null;
+            return orderedAlignmentScore(a, b);
+        }
+
+        // ============================================================================
         // METRIC FAMILIES
         // ============================================================================
         //
@@ -9425,8 +9594,13 @@
             {
                 id: 'syntax', label: 'Sentence templates', defaultWeight: 1.5,
                 blurb: 'Part-of-speech patterns: how sentences are built, largely independent of topic.',
-                metrics: ['posSyntactic', 'shaib4', 'shaib5', 'shaib6',
+                metrics: ['posTemplate4', 'posTemplate6', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6',
                           'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS']
+            },
+            {
+                id: 'structure', label: 'Argument path', defaultWeight: 1.5,
+                blurb: 'Whether the two responses move through their argument in the same order, not just cover the same ground.',
+                metrics: ['argumentPath']
             },
             {
                 id: 'style', label: 'Style habits', defaultWeight: 1.0,
@@ -12036,6 +12210,21 @@
                 contentProfileStats = null;
             }
 
+            // PHASE 0f: Cohort statistics for the POS templates (if selected)
+            const templateMetrics = ['posTemplate4', 'posTemplate6'];
+            if (templateMetrics.some(m => selectedMetrics.includes(m)) && window.nlp) {
+                updateProgress(0, totalPairs, 'Phase 0f: Indexing sentence templates...', 'Tagging each response once...');
+                await sleep(10);
+
+                posTemplateStats = buildPosTemplateStats(responses.map(r => r.text));
+
+                updateProgress(0, totalPairs, 'Phase 0f: Template index complete',
+                    `${posTemplateStats.bySize[4].size} four-tag and ${posTemplateStats.bySize[6].size} six-tag templates`);
+                await sleep(300);
+            } else {
+                posTemplateStats = null;
+            }
+
             // PHASE 1: Calculate all individual metrics using Web Workers (parallel)
             updateProgress(0, totalPairs, 'Phase 1: Calculating individual metrics (parallel)...', 'Initializing workers...');
             await sleep(10);
@@ -12759,16 +12948,27 @@
             // PHASE 1.95: Style profiles (if selected)
             // Main thread, like the rare phrases: these compare against cohort-wide statistics.
             if ((styleProfileStats && styleMetrics.some(m => selectedMetrics.includes(m))) ||
-                (contentProfileStats && contentMetrics.some(m => selectedMetrics.includes(m)))) {
+                (contentProfileStats && contentMetrics.some(m => selectedMetrics.includes(m))) ||
+                (posTemplateStats && templateMetrics.some(m => selectedMetrics.includes(m))) ||
+                (semanticIndex && selectedMetrics.includes('argumentPath'))) {
                 const scorers = {
                     registerMarkers: registerSimilarity,
                     punctuationProfile: punctuationSimilarity,
                     transitionChoice: transitionChoiceSimilarity,
                     sentenceOpeners: sentenceOpenerSimilarity,
                     sharedEntities: sharedEntitySimilarity,
-                    distinctiveVocab: distinctiveVocabularySimilarity
+                    distinctiveVocab: distinctiveVocabularySimilarity,
+                    posTemplate4: (a, b) => posTemplateSimilarity(a, b, 4),
+                    posTemplate6: (a, b) => posTemplateSimilarity(a, b, 6),
+                    argumentPath: argumentPathSimilarity
                 };
-                const active = styleMetrics.concat(contentMetrics).filter(m => selectedMetrics.includes(m));
+                const available = (m) => {
+                    if (m === 'posTemplate4' || m === 'posTemplate6') return !!posTemplateStats;
+                    if (m === 'argumentPath') return !!semanticIndex;
+                    return true;
+                };
+                const active = styleMetrics.concat(contentMetrics, templateMetrics, ['argumentPath'])
+                    .filter(m => selectedMetrics.includes(m) && available(m));
 
                 updateProgress(0, pairMetrics.length, 'Comparing writing style...', 'Register, punctuation, transitions and openers...');
                 await sleep(0);
@@ -12785,7 +12985,10 @@
                     const pair = pairMetrics[i];
                     active.forEach(metric => {
                         try {
-                            pair.metrics[metric] = scorers[metric](pair.text1, pair.text2);
+                            const value = scorers[metric](pair.text1, pair.text2);
+                            // null means "not available for this pair" - left unset so Phase 3
+                            // skips it rather than counting it as a zero.
+                            if (value !== null) pair.metrics[metric] = value;
                         } catch (error) {
                             console.error(`Error calculating ${metric} for pair:`, error);
                         }
@@ -13050,7 +13253,9 @@
             functionWordDist: 'Function-word distribution', rareNgram: 'Shared rare phrases',
             registerMarkers: 'Chatbot register', punctuationProfile: 'Punctuation profile',
             transitionChoice: 'Which transitions', sentenceOpeners: 'Sentence openers',
-            sharedEntities: 'Shared names and figures', distinctiveVocab: 'Distinctive vocabulary'
+            sharedEntities: 'Shared names and figures', distinctiveVocab: 'Distinctive vocabulary',
+            posTemplate4: 'POS 4-gram templates', posTemplate6: 'POS 6-gram templates',
+            argumentPath: 'Argument path'
         };
 
         function renderInertMetricNotice() {
