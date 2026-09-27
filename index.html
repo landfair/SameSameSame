@@ -969,6 +969,13 @@
                     <select id="columnSelect"></select>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
+                    <label style="font-weight: 600; white-space: nowrap;"
+                           title="A column marking known-AI texts (1/true/yes). Flagged rows are shown separately on the map and every other response is measured against them.">
+                        Reference Column:
+                    </label>
+                    <select id="referenceColumnSelect"></select>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
                     <label style="font-weight: 600; white-space: nowrap;">
                         Threshold: <span id="thresholdDisplay" style="color: #e74c3c;">0.60</span>
                     </label>
@@ -2152,6 +2159,7 @@
                             <div id="visualizationContent">
                                 <canvas id="similarityScatterPlot" width="900" height="600" style="max-width: 100%; border: 1px solid #e0e0e0; border-radius: 5px; cursor: crosshair;"></canvas>
                                 <div id="visualizationStats" style="margin-top: 15px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;"></div>
+                                <div id="referenceReport" style="margin-top: 5px;"></div>
                             </div>
                         </div>
                     </div>
@@ -2750,13 +2758,14 @@
         let csvData = [];
         let headers = [];
         let currentColumn = 0;
+        let referenceColumn = -1; // CSV column flagging known-AI reference texts; -1 = none
         let analysisResults = {};
         let responses = []; // Global responses array
         let analysisIsRunning = false;
         let cancelRequested = false;
         let isRestoringSession = false;
         let metricNormalizationParams = {}; // Stores min/max for each metric for normalization
-        const METRIC_VERSION = 3; // Increment this when adding new metrics (v3 = added TTR/MATTR)
+        const METRIC_VERSION = 4; // Increment this when adding new metrics (v4 = single-source metrics; NER now always uses the Compromise NLP path)
 
         // ========== HEADER MENU ==========
 
@@ -2838,6 +2847,7 @@
                 localStorage.setItem('homogeneityAnalyzer_csvData', JSON.stringify(csvData));
                 localStorage.setItem('homogeneityAnalyzer_headers', JSON.stringify(headers));
                 localStorage.setItem('homogeneityAnalyzer_currentColumn', currentColumn.toString());
+                localStorage.setItem('homogeneityAnalyzer_referenceColumn', referenceColumn.toString());
                 localStorage.setItem('homogeneityAnalyzer_threshold', document.getElementById('similarityThreshold')?.value || '0.60');
                 localStorage.setItem('homogeneityAnalyzer_metricVersion', METRIC_VERSION.toString());
 
@@ -2904,6 +2914,7 @@
                 const savedCsvData = localStorage.getItem('homogeneityAnalyzer_csvData');
                 const savedHeaders = localStorage.getItem('homogeneityAnalyzer_headers');
                 const savedColumn = localStorage.getItem('homogeneityAnalyzer_currentColumn');
+                const savedReferenceColumn = localStorage.getItem('homogeneityAnalyzer_referenceColumn');
                 const savedThreshold = localStorage.getItem('homogeneityAnalyzer_threshold');
 
                 if (savedCsvData && savedHeaders) {
@@ -2924,6 +2935,14 @@
                             select.appendChild(option);
                         }
                     });
+
+                    // Restore the reference column, falling back to header detection for
+                    // sessions saved before this setting existed.
+                    referenceColumn = savedReferenceColumn !== null
+                        ? parseInt(savedReferenceColumn)
+                        : detectReferenceColumn(headers);
+                    if (isNaN(referenceColumn)) referenceColumn = -1;
+                    populateReferenceColumnSelect();
 
                     // Restore threshold
                     if (savedThreshold) {
@@ -2984,7 +3003,11 @@
                             console.log('✓ Restored', allSimilarityPairs.length, 'similarity pairs');
                         }
 
-                        console.log('✓ Restored', responses.length, 'responses');
+                        // Saved responses may predate reference flags, or have been saved under a
+                        // different column - re-derive them from csvData either way.
+                        const restoredReferenceCount = applyReferenceFlags();
+                        console.log('✓ Restored', responses.length, 'responses',
+                                    restoredReferenceCount > 0 ? `(${restoredReferenceCount} reference texts)` : '');
 
                         // Update display with restored data
                         updateThreshold(savedThreshold || '0.40');
@@ -3048,6 +3071,7 @@
                 localStorage.removeItem('homogeneityAnalyzer_csvData');
                 localStorage.removeItem('homogeneityAnalyzer_headers');
                 localStorage.removeItem('homogeneityAnalyzer_currentColumn');
+                localStorage.removeItem('homogeneityAnalyzer_referenceColumn');
                 localStorage.removeItem('homogeneityAnalyzer_threshold');
                 localStorage.removeItem('homogeneityAnalyzer_analysisResults');
                 localStorage.removeItem('homogeneityAnalyzer_similarityPairs');
@@ -3106,7 +3130,198 @@
                 await analyzeCorpus();
                 saveSession();
             });
+            document.getElementById('referenceColumnSelect').addEventListener('change', async (e) => {
+                referenceColumn = parseInt(e.target.value);
+                // Flags only affect how results are grouped and reported, not the pairwise
+                // metrics themselves, so re-tag the responses and redraw without recomputing.
+                applyReferenceFlags();
+                if (allSimilarityPairs.length > 0) {
+                    renderSimilarityVisualization();
+                }
+                saveSession();
+            });
         });
+
+        // ========== REFERENCE TEXTS ==========
+        // A reference is a text whose origin is already known - typically generated by the
+        // model under study. Flagging them turns a purely relative measurement into one with
+        // a fixed point: instead of only asking which two students resemble each other, the
+        // tool can also ask how close each student sits to a known machine-written text.
+
+        // Header names that plausibly mark a reference flag column.
+        const REFERENCE_HEADER_PATTERN = /^\s*(is[\s_-]*)?(ai[\s_-]*)?(reference|ref)s?\s*$|^\s*ai[\s_-]*generated\s*$|^\s*is[\s_-]*ai\s*$/i;
+
+        // Cell values counted as "this row is a reference".
+        const REFERENCE_TRUTHY_VALUES = new Set(['1', 'true', 'yes', 'y', 't', 'x', 'ref', 'reference',
+                                                 'ai', 'ai-generated', 'ai_generated', 'aigenerated']);
+
+        function isReferenceValue(value) {
+            if (value === undefined || value === null) return false;
+            return REFERENCE_TRUTHY_VALUES.has(String(value).trim().toLowerCase());
+        }
+
+        // Pick a reference column automatically when a header looks like one. Returns -1 if
+        // nothing matches, which leaves the tool behaving exactly as it did before.
+        function detectReferenceColumn(headerRow) {
+            if (!Array.isArray(headerRow)) return -1;
+            for (let i = 1; i < headerRow.length; i++) {
+                if (REFERENCE_HEADER_PATTERN.test(String(headerRow[i] || ''))) return i;
+            }
+            return -1;
+        }
+
+        function populateReferenceColumnSelect() {
+            const select = document.getElementById('referenceColumnSelect');
+            if (!select) return;
+
+            select.innerHTML = '';
+            const none = document.createElement('option');
+            none.value = '-1';
+            none.textContent = 'None';
+            select.appendChild(none);
+
+            headers.forEach((header, i) => {
+                if (i > 0 && header.trim()) {
+                    const option = document.createElement('option');
+                    option.value = String(i);
+                    option.textContent = header.length > 40 ? header.substring(0, 40) + '...' : header;
+                    select.appendChild(option);
+                }
+            });
+
+            select.value = String(referenceColumn);
+        }
+
+        // How many rows the current reference column actually flags. Used to warn when a
+        // column is selected but marks nothing - usually a value-format mismatch.
+        function countFlaggedRows() {
+            if (referenceColumn < 0) return 0;
+            return csvData.filter(row => isReferenceValue(row[referenceColumn])).length;
+        }
+
+        // Re-derive isReference on the live responses from the current column. Called after a
+        // restore (a session saved before this feature existed has no flags at all) and when
+        // the column selection changes, so the flags can never drift from csvData.
+        function applyReferenceFlags() {
+            if (responses.length === 0) return 0;
+
+            const flaggedById = new Map();
+            csvData.forEach(row => {
+                flaggedById.set(String(row[0]), referenceColumn >= 0 && isReferenceValue(row[referenceColumn]));
+            });
+
+            responses.forEach(r => {
+                r.isReference = flaggedById.get(String(r.id)) === true;
+            });
+
+            return responses.filter(r => r.isReference).length;
+        }
+
+        function getReferences() {
+            return responses.filter(r => r.isReference);
+        }
+
+        // For each non-reference response, the reference it most resembles. Similarities come
+        // straight from allSimilarityPairs, so this reflects whatever metric weighting is
+        // currently configured rather than recomputing anything.
+        function buildNearestReferenceReport() {
+            const references = getReferences();
+            if (references.length === 0) return [];
+
+            const referenceIds = new Set(references.map(r => r.id));
+            const best = new Map(); // response id -> { referenceId, similarity }
+
+            allSimilarityPairs.forEach(pair => {
+                const oneIsReference = referenceIds.has(pair.id1);
+                const otherIsReference = referenceIds.has(pair.id2);
+                if (oneIsReference === otherIsReference) return; // skip ref-ref and student-student
+
+                const studentId = oneIsReference ? pair.id2 : pair.id1;
+                const referenceId = oneIsReference ? pair.id1 : pair.id2;
+                const current = best.get(studentId);
+                if (!current || pair.similarity > current.similarity) {
+                    best.set(studentId, { referenceId, similarity: pair.similarity });
+                }
+            });
+
+            return responses
+                .filter(r => !r.isReference && best.has(r.id))
+                .map(r => ({
+                    id: r.id,
+                    referenceId: best.get(r.id).referenceId,
+                    similarity: best.get(r.id).similarity
+                }))
+                .sort((a, b) => b.similarity - a.similarity);
+        }
+
+        function renderReferenceReport() {
+            const container = document.getElementById('referenceReport');
+            if (!container) return;
+
+            const references = getReferences();
+
+            if (referenceColumn < 0) {
+                container.innerHTML = `
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #ccc; font-size: 13px; color: #666;">
+                        <strong>No reference column selected.</strong> If your CSV marks known-AI texts in a
+                        column (values like <code>1</code>, <code>true</code> or <code>yes</code>), pick it in
+                        <em>Reference Column</em> above. Each response is then measured against those texts,
+                        which catches a single student working alone - something pairwise comparison cannot see.
+                    </div>`;
+                return;
+            }
+
+            if (references.length === 0) {
+                container.innerHTML = `
+                    <div style="background: #fef5e7; padding: 15px; border-radius: 5px; border-left: 4px solid #f39c12; font-size: 13px; color: #7d6608;">
+                        <strong>Column "${escapeHtml(headers[referenceColumn] || '')}" flags no rows.</strong>
+                        Recognised values are 1, true, yes, y, t, x, ref, reference, ai. Rows whose text column
+                        is empty are dropped before analysis, so a flagged row with no response will not appear.
+                    </div>`;
+                return;
+            }
+
+            const report = buildNearestReferenceReport();
+            if (report.length === 0) {
+                container.innerHTML = `
+                    <div style="background: #fef5e7; padding: 15px; border-radius: 5px; border-left: 4px solid #f39c12; font-size: 13px; color: #7d6608;">
+                        ${references.length} reference text${references.length === 1 ? '' : 's'} flagged, but no
+                        comparisons against them were found. Re-run the analysis to populate them.
+                    </div>`;
+                return;
+            }
+
+            const rows = report.map((entry, i) => `
+                <tr style="border-bottom: 1px solid #eee; ${i < 5 ? 'background: #fffaf3;' : ''}">
+                    <td style="padding: 8px 10px; font-weight: ${i < 5 ? '600' : '400'};">${escapeHtml(String(entry.id))}</td>
+                    <td style="padding: 8px 10px; color: #666;">${escapeHtml(String(entry.referenceId))}</td>
+                    <td style="padding: 8px 10px; text-align: right; font-variant-numeric: tabular-nums;">${(entry.similarity * 100).toFixed(1)}%</td>
+                </tr>`).join('');
+
+            container.innerHTML = `
+                <h4 style="margin: 20px 0 8px 0; color: #57068C;">
+                    Closest reference text, per response
+                </h4>
+                <p style="margin: 0 0 10px 0; font-size: 13px; color: #666;">
+                    ${references.length} reference text${references.length === 1 ? '' : 's'} flagged
+                    (${escapeHtml(headers[referenceColumn] || '')}). Sorted by similarity, so the responses
+                    sitting closest to a known machine-written text are at the top. This is a ranking, not a
+                    verdict: a high value says a response resembles that reference on the selected metrics,
+                    which a shared prompt alone can produce.
+                </p>
+                <div style="max-height: 320px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 5px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <thead>
+                            <tr style="background: #f8f9fa; position: sticky; top: 0;">
+                                <th style="padding: 10px; text-align: left;">Response</th>
+                                <th style="padding: 10px; text-align: left;">Nearest reference</th>
+                                <th style="padding: 10px; text-align: right;">Similarity</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>`;
+        }
 
         function handleFileUpload(e) {
             const file = e.target.files[0];
@@ -3145,6 +3360,11 @@
             });
 
             currentColumn = 1;
+            referenceColumn = detectReferenceColumn(headers);
+            populateReferenceColumnSelect();
+            if (referenceColumn >= 0) {
+                console.log(`Reference column detected: "${headers[referenceColumn]}" (${countFlaggedRows()} rows flagged)`);
+            }
 
             // Hide welcome/upload screens and show app interface
             document.getElementById('welcomeScreen').style.display = 'none';
@@ -3207,8 +3427,10 @@
             // Update global responses array
             responses = csvData.map(row => ({
                 id: row[0],
-                text: row[currentColumn] || ''
+                text: row[currentColumn] || '',
+                isReference: false
             })).filter(r => r.text.trim());
+            applyReferenceFlags();
 
             if (responses.length === 0) return;
 
@@ -3290,13 +3512,7 @@
             };
         }
 
-        function tokenize(text) {
-            return text.toLowerCase()
-                .replace(/[\u2018\u2019\u201C\u201D]/g, "'")  // Normalize smart quotes to straight quotes
-                .replace(/[^\w\s']/g, ' ')  // Keep apostrophes for contractions
-                .split(/\s+/)
-                .filter(w => w.length > 0);  // Changed from > 2 to > 0 to allow pronouns like "i", "me", "we"
-        }
+        // tokenize: moved into sharedMetricFunctions()
 
         function analyzePhrases(responses) {
             const phraseCounts = {};
@@ -3395,154 +3611,22 @@
 
         // ========== NEW SIMILARITY METRICS ==========
 
-        function sentenceLengthVariance(text) {
-            const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
-            if (sentences.length === 0) return 0;
-            const lengths = sentences.map(s => s.trim().split(/\s+/).length);
-            const mean = lengths.reduce((a,b) => a+b, 0) / lengths.length;
-            const variance = lengths.reduce((sum, len) => sum + Math.pow(len - mean, 2), 0) / lengths.length;
-            return variance;
-        }
+        // sentenceLengthVariance: moved into sharedMetricFunctions()
 
-        function sentenceVarianceSimilarity(text1, text2) {
-            const var1 = sentenceLengthVariance(text1);
-            const var2 = sentenceLengthVariance(text2);
-            if (var1 === 0 && var2 === 0) return 1;
-            return 1 - Math.abs(var1 - var2) / Math.max(var1, var2, 1);
-        }
+        // sentenceVarianceSimilarity: moved into sharedMetricFunctions()
 
-        function wordCountSimilarity(text1, text2) {
-            const count1 = text1.trim().split(/\s+/).length;
-            const count2 = text2.trim().split(/\s+/).length;
-            if (count1 === 0 && count2 === 0) return 1;
-            return 1 - Math.abs(count1 - count2) / Math.max(count1, count2);
-        }
+        // wordCountSimilarity: moved into sharedMetricFunctions()
 
-        function avgSentenceLengthSimilarity(text1, text2) {
-            const sentences1 = text1.split(/[.!?]+/).filter(s => s.trim().length > 0);
-            const sentences2 = text2.split(/[.!?]+/).filter(s => s.trim().length > 0);
-
-            const avg1 = sentences1.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) / sentences1.length;
-            const avg2 = sentences2.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) / sentences2.length;
-
-            if (!avg1 || !avg2) return 0;
-            return 1 - Math.abs(avg1 - avg2) / Math.max(avg1, avg2);
-        }
+        // avgSentenceLengthSimilarity: moved into sharedMetricFunctions()
 
         // OLD BURSTINESS FUNCTIONS REMOVED
         // Replaced with corpus-level temporal burstiness analysis from Cui et al. 2017
 
-        function pronounDensitySimilarity(text1, text2) {
-            const pronouns = ['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'ours', 'ourselves',
-                            'you', 'your', 'yours', 'yourself', 'yourselves',
-                            'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself',
-                            'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
-                            'i\'m', 'i\'ve', 'i\'d', 'i\'ll', 'you\'re', 'you\'ve', 'you\'d', 'you\'ll',
-                            'he\'s', 'he\'d', 'he\'ll', 'she\'s', 'she\'d', 'she\'ll', 'it\'s', 'it\'d', 'it\'ll',
-                            'we\'re', 'we\'ve', 'we\'d', 'we\'ll', 'they\'re', 'they\'ve', 'they\'d', 'they\'ll'];
+        // pronounDensitySimilarity: moved into sharedMetricFunctions()
 
-            const words1 = tokenize(text1);
-            const words2 = tokenize(text2);
+        // transitionWordsSimilarity: moved into sharedMetricFunctions()
 
-            const count1 = words1.filter(w => pronouns.includes(w.toLowerCase())).length;
-            const count2 = words2.filter(w => pronouns.includes(w.toLowerCase())).length;
-
-            const density1 = words1.length > 0 ? count1 / words1.length : 0;
-            const density2 = words2.length > 0 ? count2 / words2.length : 0;
-
-            if (density1 === 0 && density2 === 0) return 1;
-            const maxDensity = Math.max(density1, density2);
-            if (maxDensity === 0) return 1;
-            return 1 - Math.abs(density1 - density2) / maxDensity;
-        }
-
-        function transitionWordsSimilarity(text1, text2) {
-            const transitions = [
-                // Addition
-                'furthermore', 'moreover', 'additionally', 'also', 'besides', 'in addition', 'as well as',
-                // Example/Clarification
-                'for example', 'for instance', 'specifically', 'to illustrate', 'namely', 'in other words',
-                'that is', 'in particular', 'such as',
-                // Contrast/Opposition
-                'however', 'nevertheless', 'nonetheless', 'conversely', 'on the other hand', 'in contrast',
-                'yet', 'still', 'although', 'even though', 'despite', 'regardless', 'alternatively',
-                // Cause/Effect
-                'therefore', 'thus', 'consequently', 'as a result', 'accordingly', 'hence', 'for this reason',
-                'because of this', 'due to', 'since',
-                // Time/Sequence
-                'meanwhile', 'subsequently', 'finally', 'firstly', 'secondly', 'thirdly', 'then', 'next',
-                'afterward', 'previously', 'eventually', 'ultimately', 'later', 'initially', 'formerly',
-                // Conclusion/Summary
-                'in conclusion', 'to sum up', 'in summary', 'overall', 'all in all', 'in brief',
-                'to conclude', 'in the end',
-                // Emphasis
-                'indeed', 'in fact', 'certainly', 'undoubtedly', 'notably', 'especially', 'particularly',
-                'importantly', 'significantly',
-                // Comparison
-                'similarly', 'likewise', 'in the same way', 'equally', 'by comparison'
-            ];
-
-            const count1 = transitions.reduce((sum, word) =>
-                sum + (text1.toLowerCase().match(new RegExp('\\b' + word + '\\b', 'g')) || []).length, 0
-            );
-            const count2 = transitions.reduce((sum, word) =>
-                sum + (text2.toLowerCase().match(new RegExp('\\b' + word + '\\b', 'g')) || []).length, 0
-            );
-
-            const words1 = text1.trim().split(/\s+/).length;
-            const words2 = text2.trim().split(/\s+/).length;
-
-            const density1 = (count1 / words1) * 100;
-            const density2 = (count2 / words2) * 100;
-
-            if (density1 === 0 && density2 === 0) return 1;
-            return 1 - Math.abs(density1 - density2) / Math.max(density1, density2, 1);
-        }
-
-        function temporalBurstinessSimilarity(text1, text2) {
-            // Pairwise temporal burstiness comparison using word positions
-            const stopWords = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
-                                       'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
-                                       'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
-                                       'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their']);
-
-            // Track word positions for each text
-            const getWordPositions = (text) => {
-                const words = text.toLowerCase().match(/\b[a-z]+\b/g) || [];
-                const positions = {};
-                words.forEach((word, idx) => {
-                    if (!stopWords.has(word) && word.length > 3) {
-                        if (!positions[word]) positions[word] = [];
-                        positions[word].push(idx);
-                    }
-                });
-                return { positions, totalWords: words.length };
-            };
-
-            const data1 = getWordPositions(text1);
-            const data2 = getWordPositions(text2);
-
-            // Find common significant words (appear at least 2 times in each)
-            const commonWords = Object.keys(data1.positions).filter(word =>
-                data2.positions[word] &&
-                data1.positions[word].length >= 2 &&
-                data2.positions[word].length >= 2
-            );
-
-            if (commonWords.length === 0) return 0; // No shared repeated words = no similarity
-
-            // Calculate burstiness for common words in each text
-            const burstinessScores = commonWords.map(word => {
-                const burst1 = calculateTemporalBurstiness(data1.positions[word], data1.totalWords);
-                const burst2 = calculateTemporalBurstiness(data2.positions[word], data2.totalWords);
-
-                // Similarity is 1 minus the absolute difference
-                return 1 - Math.abs(burst1 - burst2);
-            });
-
-            // Return average similarity across all common words
-            return burstinessScores.reduce((a, b) => a + b, 0) / burstinessScores.length;
-        }
+        // temporalBurstinessSimilarity: moved into sharedMetricFunctions()
 
         // Calculate all individual metric scores for a pair of texts
         async function calculateAllMetrics(text1, text2, selectedMetrics) {
@@ -8296,363 +8380,34 @@
             `;
         }
 
-        function cosineSimilarity(text1, text2) {
-            const words1 = tokenize(text1);
-            const words2 = tokenize(text2);
-            const freq1 = {};
-            const freq2 = {};
-            const allWords = new Set([...words1, ...words2]);
+        // cosineSimilarity: moved into sharedMetricFunctions()
 
-            words1.forEach(w => freq1[w] = (freq1[w] || 0) + 1);
-            words2.forEach(w => freq2[w] = (freq2[w] || 0) + 1);
+        // jaccardSimilarity: moved into sharedMetricFunctions()
 
-            let dotProduct = 0, mag1 = 0, mag2 = 0;
-            allWords.forEach(word => {
-                const v1 = freq1[word] || 0;
-                const v2 = freq2[word] || 0;
-                dotProduct += v1 * v2;
-                mag1 += v1 * v1;
-                mag2 += v2 * v2;
-            });
+        // ngramSimilarity: moved into sharedMetricFunctions()
 
-            return (mag1 === 0 || mag2 === 0) ? 0 : dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2));
-        }
+        // ngramWithPunctuationSimilarity: moved into sharedMetricFunctions()
 
-        function jaccardSimilarity(text1, text2) {
-            const set1 = new Set(tokenize(text1));
-            const set2 = new Set(tokenize(text2));
-            const intersection = new Set([...set1].filter(x => set2.has(x)));
-            const union = new Set([...set1, ...set2]);
-            return union.size === 0 ? 0 : intersection.size / union.size;
-        }
+        // wordNgramSimilarity: moved into sharedMetricFunctions()
 
-        function ngramSimilarity(text1, text2, n = 3) {
-            const getNgrams = (text) => {
-                const ngrams = new Set();
-                const clean = text.toLowerCase().replace(/[^\w\s]/g, '');
-                for (let i = 0; i <= clean.length - n; i++) {
-                    ngrams.add(clean.substring(i, i + n));
-                }
-                return ngrams;
-            };
+        // ngram4Similarity: moved into sharedMetricFunctions()
 
-            const ngrams1 = getNgrams(text1);
-            const ngrams2 = getNgrams(text2);
-            const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-            const union = new Set([...ngrams1, ...ngrams2]);
-            return union.size === 0 ? 0 : intersection.size / union.size;
-        }
+        // ngram5Similarity: moved into sharedMetricFunctions()
 
-        function ngramWithPunctuationSimilarity(text1, text2, n = 3) {
-            const getNgrams = (text) => {
-                const ngrams = new Set();
-                const clean = text.toLowerCase(); // Keep punctuation, just lowercase
-                for (let i = 0; i <= clean.length - n; i++) {
-                    ngrams.add(clean.substring(i, i + n));
-                }
-                return ngrams;
-            };
-
-            const ngrams1 = getNgrams(text1);
-            const ngrams2 = getNgrams(text2);
-            const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-            const union = new Set([...ngrams1, ...ngrams2]);
-            return union.size === 0 ? 0 : intersection.size / union.size;
-        }
-
-        function wordNgramSimilarity(text1, text2, n = 3) {
-            const getWordNgrams = (text) => {
-                const words = tokenize(text); // Use existing tokenize function
-                const ngrams = new Set();
-                for (let i = 0; i <= words.length - n; i++) {
-                    ngrams.add(words.slice(i, i + n).join(' ').toLowerCase());
-                }
-                return ngrams;
-            };
-
-            const ngrams1 = getWordNgrams(text1);
-            const ngrams2 = getWordNgrams(text2);
-            const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-            const union = new Set([...ngrams1, ...ngrams2]);
-            return union.size === 0 ? 0 : intersection.size / union.size;
-        }
-
-        function ngram4Similarity(text1, text2) {
-            const getNgrams = (text) => {
-                const ngrams = new Set();
-                const clean = text.toLowerCase().replace(/[^\w\s]/g, '');
-                for (let i = 0; i <= clean.length - 4; i++) {
-                    ngrams.add(clean.substring(i, i + 4));
-                }
-                return ngrams;
-            };
-
-            const ngrams1 = getNgrams(text1);
-            const ngrams2 = getNgrams(text2);
-            const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-            const union = new Set([...ngrams1, ...ngrams2]);
-            return union.size === 0 ? 0 : intersection.size / union.size;
-        }
-
-        function ngram5Similarity(text1, text2) {
-            const getNgrams = (text) => {
-                const ngrams = new Set();
-                const clean = text.toLowerCase().replace(/[^\w\s]/g, '');
-                for (let i = 0; i <= clean.length - 5; i++) {
-                    ngrams.add(clean.substring(i, i + 5));
-                }
-                return ngrams;
-            };
-
-            const ngrams1 = getNgrams(text1);
-            const ngrams2 = getNgrams(text2);
-            const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-            const union = new Set([...ngrams1, ...ngrams2]);
-            return union.size === 0 ? 0 : intersection.size / union.size;
-        }
-
-        function nerSimilarity(text1, text2) {
-            // Extract named entities using Compromise.js NLP
-            const extractEntities = (text) => {
-                const wordCount = tokenize(text).length;
-
-                if (!window.nlp) {
-                    console.warn('NER: Compromise.js not loaded, using fallback');
-                    // Fallback to simple capitalization pattern
-                    const properNounPattern = /\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b/g;
-                    const matches = text.match(properNounPattern) || [];
-                    const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
-                    const entities = matches.filter(m => !commonWords.has(m));
-                    const uniqueEntities = [...new Set(entities)];
-
-                    return {
-                        entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
-                        entityList: uniqueEntities,
-                        count: uniqueEntities.length,
-                        density: wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0,
-                        wordCount: wordCount,
-                        people: [],
-                        places: [],
-                        organizations: []
-                    };
-                }
-
-                try {
-                    const doc = nlp(text);
-
-                    // Extract specific entity types using Compromise.js
-                    const people = doc.people().out('array');
-                    const places = doc.places().out('array');
-                    const organizations = doc.organizations().out('array');
-
-                    // Get proper nouns that aren't already in the above categories
-                    const properNouns = doc.match('#ProperNoun').out('array');
-
-                    // Clean and filter entities
-                    const cleanEntity = (e) => e.trim().replace(/[,\.;:!?]+$/, ''); // Remove trailing punctuation
-                    const isValid = (e) => e.length > 1 && !/^[^a-zA-Z]+$/.test(e); // At least 2 chars and contains letters
-
-                    // Combine and deduplicate (case-insensitive)
-                    const allRaw = [...people, ...places, ...organizations, ...properNouns];
-                    const cleaned = allRaw.map(cleanEntity).filter(isValid);
-                    const lowerMap = new Map();
-                    cleaned.forEach(e => {
-                        const lower = e.toLowerCase();
-                        if (!lowerMap.has(lower)) {
-                            lowerMap.set(lower, e);
-                        }
-                    });
-                    const uniqueEntities = Array.from(lowerMap.values());
-
-                    // Calculate density (per 100 words)
-                    const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
-
-                    return {
-                        entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
-                        entityList: uniqueEntities,
-                        count: uniqueEntities.length,
-                        density: density,
-                        wordCount: wordCount,
-                        people: people.map(cleanEntity).filter(isValid),
-                        places: places.map(cleanEntity).filter(isValid),
-                        organizations: organizations.map(cleanEntity).filter(isValid)
-                    };
-                } catch (error) {
-                    console.error('Error in NLP-based NER:', error);
-                    return {
-                        entities: new Set(),
-                        entityList: [],
-                        count: 0,
-                        density: 0,
-                        wordCount: wordCount,
-                        people: [],
-                        places: [],
-                        organizations: []
-                    };
-                }
-            };
-
-            const entities1 = extractEntities(text1);
-            const entities2 = extractEntities(text2);
-
-            // Calculate Jaccard similarity
-            const intersection = new Set([...entities1.entities].filter(x => entities2.entities.has(x)));
-            const union = new Set([...entities1.entities, ...entities2.entities]);
-            const contentSimilarity = union.size === 0 ? 0 : intersection.size / union.size;
-
-            // Calculate density similarity (how similar are the usage rates?)
-            const densitySimilarity = (() => {
-                if (entities1.density === 0 && entities2.density === 0) return 1;
-                const max = Math.max(entities1.density, entities2.density);
-                return max === 0 ? 0 : 1 - (Math.abs(entities1.density - entities2.density) / max);
-            })();
-
-            // Weighted average: 60% content similarity (shared entities), 40% density similarity (usage patterns)
-            return (contentSimilarity * 0.6) + (densitySimilarity * 0.4);
-        }
+        // nerSimilarity: moved into sharedMetricFunctions()
 
         // Levenshtein distance - minimum edits needed to transform one string into another
         // Character-level Levenshtein distance
-        function levenshteinDistance(str1, str2) {
-            const len1 = str1.length;
-            const len2 = str2.length;
-            const matrix = [];
-
-            // Initialize matrix
-            for (let i = 0; i <= len1; i++) {
-                matrix[i] = [i];
-            }
-            for (let j = 0; j <= len2; j++) {
-                matrix[0][j] = j;
-            }
-
-            // Fill matrix
-            for (let i = 1; i <= len1; i++) {
-                for (let j = 1; j <= len2; j++) {
-                    if (str1[i - 1] === str2[j - 1]) {
-                        matrix[i][j] = matrix[i - 1][j - 1];
-                    } else {
-                        matrix[i][j] = Math.min(
-                            matrix[i - 1][j - 1] + 1, // substitution
-                            matrix[i][j - 1] + 1,     // insertion
-                            matrix[i - 1][j] + 1      // deletion
-                        );
-                    }
-                }
-            }
-
-            return matrix[len1][len2];
-        }
+        // levenshteinDistance: moved into sharedMetricFunctions()
 
         // Word-level Levenshtein distance - counts word substitutions/insertions/deletions
-        function wordLevelLevenshteinDistance(phrase1, phrase2) {
-            const words1 = phrase1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-            const words2 = phrase2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-
-            const len1 = words1.length;
-            const len2 = words2.length;
-            const matrix = [];
-
-            // Initialize matrix
-            for (let i = 0; i <= len1; i++) {
-                matrix[i] = [i];
-            }
-            for (let j = 0; j <= len2; j++) {
-                matrix[0][j] = j;
-            }
-
-            // Fill matrix - comparing words instead of characters
-            for (let i = 1; i <= len1; i++) {
-                for (let j = 1; j <= len2; j++) {
-                    if (words1[i - 1] === words2[j - 1]) {
-                        matrix[i][j] = matrix[i - 1][j - 1];
-                    } else {
-                        matrix[i][j] = Math.min(
-                            matrix[i - 1][j - 1] + 1, // word substitution
-                            matrix[i][j - 1] + 1,     // word insertion
-                            matrix[i - 1][j] + 1      // word deletion
-                        );
-                    }
-                }
-            }
-
-            return matrix[len1][len2];
-        }
+        // wordLevelLevenshteinDistance: moved into sharedMetricFunctions()
 
         // Fuzzy n-gram matching using character-level Levenshtein distance
-        function fuzzyNgramSimilarity(text1, text2, ngramSize = 4, maxDistance = 3) {
-            // Extract word-level n-grams
-            const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-            const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-
-            const ngrams1 = [];
-            const ngrams2 = [];
-
-            // Create n-grams
-            for (let i = 0; i <= words1.length - ngramSize; i++) {
-                ngrams1.push(words1.slice(i, i + ngramSize).join(' '));
-            }
-            for (let i = 0; i <= words2.length - ngramSize; i++) {
-                ngrams2.push(words2.slice(i, i + ngramSize).join(' '));
-            }
-
-            if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
-
-            // Find fuzzy matches using Levenshtein distance
-            const matches = new Set();
-
-            ngrams1.forEach((ng1, idx1) => {
-                ngrams2.forEach((ng2, idx2) => {
-                    const distance = levenshteinDistance(ng1, ng2);
-                    // Match if distance is within threshold
-                    if (distance <= maxDistance) {
-                        matches.add(`${idx1}-${idx2}`);
-                    }
-                });
-            });
-
-            // Calculate similarity as proportion of n-grams that have fuzzy matches
-            const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
-            return matches.size / totalNgrams;
-        }
+        // fuzzyNgramSimilarity: moved into sharedMetricFunctions()
 
         // Word-level fuzzy n-gram matching - detects paraphrasing by counting word substitutions
-        function wordLevelFuzzyNgramSimilarity(text1, text2, ngramSize = 4, maxWordDistance = 1) {
-            // Extract word-level n-grams
-            const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-            const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-
-            const ngrams1 = [];
-            const ngrams2 = [];
-
-            // Create n-grams (arrays of words)
-            for (let i = 0; i <= words1.length - ngramSize; i++) {
-                ngrams1.push(words1.slice(i, i + ngramSize));
-            }
-            for (let i = 0; i <= words2.length - ngramSize; i++) {
-                ngrams2.push(words2.slice(i, i + ngramSize));
-            }
-
-            if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
-
-            // Find fuzzy matches using word-level Levenshtein distance
-            const matches = new Set();
-
-            ngrams1.forEach((ng1, idx1) => {
-                ngrams2.forEach((ng2, idx2) => {
-                    // Compare word arrays
-                    const distance = wordLevelLevenshteinDistance(ng1.join(' '), ng2.join(' '));
-                    // Match if word-level distance is within threshold
-                    if (distance <= maxWordDistance) {
-                        matches.add(`${idx1}-${idx2}`);
-                    }
-                });
-            });
-
-            // Calculate similarity as proportion of n-grams that have fuzzy matches
-            const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
-            return matches.size / totalNgrams;
-        }
+        // wordLevelFuzzyNgramSimilarity: moved into sharedMetricFunctions()
 
         // BLEU Score (word-level) - adapted for similarity analysis
         function bleuSimilarity(text1, text2) {
@@ -8718,10 +8473,7 @@
             return clippedCount / candidateNgrams.length;
         }
 
-        function tokenizeWords(text) {
-            // Lowercase and split on whitespace, filter empty
-            return text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-        }
+        // tokenizeWords: moved into sharedMetricFunctions()
 
         function extractNgrams(words, n) {
             const ngrams = [];
@@ -9152,24 +8904,7 @@
          * @param {string} text - Text to analyze
          * @returns {number} - TTR score (0-1)
          */
-        function calculateTTR(text) {
-            const words = tokenizeWords(text);
-            const cleanWords = [];
-
-            words.forEach(w => {
-                const clean = w.toLowerCase().replace(/[^a-z']/g, '');
-                if (clean.length > 0) {
-                    cleanWords.push(clean);
-                }
-            });
-
-            if (cleanWords.length === 0) {
-                return 0;
-            }
-
-            const uniqueWords = new Set(cleanWords);
-            return uniqueWords.size / cleanWords.length;
-        }
+        // calculateTTR: moved into sharedMetricFunctions()
 
         /**
          * Calculate TTR similarity between two texts
@@ -9178,20 +8913,7 @@
          * @param {string} text2 - Second text
          * @returns {number} - Similarity score (0-1, higher = more similar diversity)
          */
-        function calculateTTRSimilarity(text1, text2) {
-            const ttr1 = calculateTTR(text1);
-            const ttr2 = calculateTTR(text2);
-
-            // If both have zero TTR, consider them similar
-            if (ttr1 === 0 && ttr2 === 0) return 1;
-
-            // Calculate similarity as 1 - normalized difference
-            const maxTTR = Math.max(ttr1, ttr2);
-            if (maxTTR === 0) return 1;
-
-            const diff = Math.abs(ttr1 - ttr2);
-            return 1 - (diff / maxTTR);
-        }
+        // calculateTTRSimilarity: moved into sharedMetricFunctions()
 
         /**
          * Calculate Moving-Average Type-Token Ratio (MATTR)
@@ -9201,39 +8923,7 @@
          * @param {number} stride - Step size between windows (default 10)
          * @returns {number} - Average TTR across all windows (0-1)
          */
-        function calculateMATTR(text, windowSize = 50, stride = 10) {
-            const words = tokenizeWords(text);
-            const cleanWords = [];
-
-            words.forEach(w => {
-                const clean = w.toLowerCase().replace(/[^a-z']/g, '');
-                if (clean.length > 0) {
-                    cleanWords.push(clean);
-                }
-            });
-
-            if (cleanWords.length < windowSize) {
-                // Text too short for windowing - use simple TTR
-                const uniqueWords = new Set(cleanWords);
-                return cleanWords.length > 0 ? uniqueWords.size / cleanWords.length : 0;
-            }
-
-            const ttrScores = [];
-
-            // Slide window across text
-            for (let i = 0; i <= cleanWords.length - windowSize; i += stride) {
-                const window = cleanWords.slice(i, i + windowSize);
-                const uniqueInWindow = new Set(window);
-                const windowTTR = uniqueInWindow.size / windowSize;
-                ttrScores.push(windowTTR);
-            }
-
-            if (ttrScores.length === 0) return 0;
-
-            // Return average TTR across all windows
-            const avgTTR = ttrScores.reduce((sum, ttr) => sum + ttr, 0) / ttrScores.length;
-            return avgTTR;
-        }
+        // calculateMATTR: moved into sharedMetricFunctions()
 
         /**
          * Calculate MATTR similarity between two texts
@@ -9242,20 +8932,7 @@
          * @param {string} text2 - Second text
          * @returns {number} - Similarity score (0-1, higher = more similar diversity)
          */
-        function calculateMATTRSimilarity(text1, text2) {
-            const mattr1 = calculateMATTR(text1);
-            const mattr2 = calculateMATTR(text2);
-
-            // If both have zero MATTR, consider them similar
-            if (mattr1 === 0 && mattr2 === 0) return 1;
-
-            // Calculate similarity as 1 - normalized difference
-            const maxMATTR = Math.max(mattr1, mattr2);
-            if (maxMATTR === 0) return 1;
-
-            const diff = Math.abs(mattr1 - mattr2);
-            return 1 - (diff / maxMATTR);
-        }
+        // calculateMATTRSimilarity: moved into sharedMetricFunctions()
 
         // ============================================================================
         // PERPLEXITY FINGERPRINT FUNCTIONS
@@ -9467,57 +9144,7 @@
          * @param {number} totalWords - Total number of words
          * @returns {number} - Burstiness measure (0 to 1)
          */
-        function calculateTemporalBurstiness(occurrences, totalWords) {
-            if (occurrences.length === 0 || totalWords === 0) return 0;
-
-            const f = occurrences.length; // frequency
-            const T = totalWords;
-
-            // Pre-compute cumulative count for efficiency (avoid repeated filtering)
-            const sortedOccurrences = [...occurrences].sort((a, b) => a - b);
-
-            let maxArea = 0;
-
-            // Limit steps for performance - use fewer steps for larger documents
-            const steps = Math.min(200, T); // Reduced from 1000 to 200
-            const dt = T / steps;
-
-            // For each occurrence k, calculate area
-            for (let k = 0; k < Math.min(f, 20); k++) { // Limit to first 20 occurrence points
-                const tk = sortedOccurrences[k];
-                let area = 0;
-
-                // Pre-calculate cumulative counts at sampled points
-                let occIdx = 0;
-                for (let i = 0; i < steps; i++) {
-                    const t = i * dt;
-
-                    // Efficient cumulative count using sorted array
-                    while (occIdx < f && sortedOccurrences[occIdx] <= t) {
-                        occIdx++;
-                    }
-                    const Ct = occIdx;
-
-                    // Linear interpolation: f/T * (t - tk) + k
-                    // Note: Cui et al. (2017) paper uses (k-1) with 1-based indexing;
-                    // we use k with 0-based indexing (mathematically equivalent, verified)
-                    const linearValue = (f / T) * (t - tk) + k;
-
-                    // |C(t) - linear|
-                    const diff = Math.abs(Ct - linearValue);
-                    area += diff * dt;
-                }
-
-                if (area > maxArea) {
-                    maxArea = area;
-                }
-            }
-
-            // Normalize by fT/2 (area of half square)
-            const normalized = (2 * maxArea) / (f * T);
-
-            return Math.min(1, normalized); // Clamp to [0, 1]
-        }
+        // calculateTemporalBurstiness: moved into sharedMetricFunctions()
 
         /**
          * Calculate inter-event intervals (τ)
@@ -9837,676 +9464,868 @@
         // ========== WEB WORKERS FOR PARALLEL PROCESSING ==========
 
         // Create worker from blob URL - keeps everything in a single file
-        function createMetricsWorker() {
-            const workerCode = `
-                // ========== WORKER SCRIPT: All similarity calculation functions ==========
+        // ============================================================================
+        // Metric functions shared verbatim by the main thread and the metrics worker.
+        //
+        // These are defined ONCE here and injected into the worker via toString(),
+        // so a fix can never land in one copy and miss the other. Nothing in this
+        // wrapper may touch the DOM; `window.nlp` is the only host reference, and
+        // the worker shims it after importScripts() loads Compromise.
+        // ============================================================================
+        function sharedMetricFunctions() {
+            function avgSentenceLengthSimilarity(text1, text2) {
+                        const sentences1 = text1.split(/[.!?]+/).filter(s => s.trim().length > 0);
+                        const sentences2 = text2.split(/[.!?]+/).filter(s => s.trim().length > 0);
 
-                function tokenize(text) {
-                    return text.toLowerCase()
-                        .replace(/[\\u2018\\u2019\\u201C\\u201D]/g, "'")
-                        .replace(/[^\\w\\s']/g, ' ')
-                        .split(/\\s+/)
-                        .filter(w => w.length > 0);
-                }
+                        const avg1 = sentences1.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) / sentences1.length;
+                        const avg2 = sentences2.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) / sentences2.length;
 
-                function sentenceLengthVariance(text) {
-                    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
-                    if (sentences.length === 0) return 0;
-                    const lengths = sentences.map(s => s.trim().split(/\\s+/).length);
-                    const mean = lengths.reduce((a,b) => a+b, 0) / lengths.length;
-                    const variance = lengths.reduce((sum, len) => sum + Math.pow(len - mean, 2), 0) / lengths.length;
-                    return variance;
-                }
+                        if (!avg1 || !avg2) return 0;
+                        return 1 - Math.abs(avg1 - avg2) / Math.max(avg1, avg2);
+                    }
 
-                function cosineSimilarity(text1, text2) {
-                    const words1 = tokenize(text1);
-                    const words2 = tokenize(text2);
-                    const freq1 = {};
-                    const freq2 = {};
-                    const allWords = new Set([...words1, ...words2]);
+            function calculateMATTR(text, windowSize = 50, stride = 10) {
+                        const words = tokenizeWords(text);
+                        const cleanWords = [];
 
-                    words1.forEach(w => freq1[w] = (freq1[w] || 0) + 1);
-                    words2.forEach(w => freq2[w] = (freq2[w] || 0) + 1);
+                        words.forEach(w => {
+                            const clean = w.toLowerCase().replace(/[^a-z']/g, '');
+                            if (clean.length > 0) {
+                                cleanWords.push(clean);
+                            }
+                        });
 
-                    let dotProduct = 0, mag1 = 0, mag2 = 0;
-                    allWords.forEach(word => {
-                        const v1 = freq1[word] || 0;
-                        const v2 = freq2[word] || 0;
-                        dotProduct += v1 * v2;
-                        mag1 += v1 * v1;
-                        mag2 += v2 * v2;
-                    });
-
-                    return (mag1 === 0 || mag2 === 0) ? 0 : dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2));
-                }
-
-                // Function word distribution - requires Compromise.js, calculated in main thread
-
-                function jaccardSimilarity(text1, text2) {
-                    const set1 = new Set(tokenize(text1));
-                    const set2 = new Set(tokenize(text2));
-                    const intersection = new Set([...set1].filter(x => set2.has(x)));
-                    const union = new Set([...set1, ...set2]);
-                    return union.size === 0 ? 0 : intersection.size / union.size;
-                }
-
-                function ngramSimilarity(text1, text2, n = 3) {
-                    const getNgrams = (text) => {
-                        const ngrams = new Set();
-                        const clean = text.toLowerCase().replace(/[^\\w\\s]/g, '');
-                        for (let i = 0; i <= clean.length - n; i++) {
-                            ngrams.add(clean.substring(i, i + n));
+                        if (cleanWords.length < windowSize) {
+                            // Text too short for windowing - use simple TTR
+                            const uniqueWords = new Set(cleanWords);
+                            return cleanWords.length > 0 ? uniqueWords.size / cleanWords.length : 0;
                         }
-                        return ngrams;
-                    };
 
-                    const ngrams1 = getNgrams(text1);
-                    const ngrams2 = getNgrams(text2);
-                    const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-                    const union = new Set([...ngrams1, ...ngrams2]);
-                    return union.size === 0 ? 0 : intersection.size / union.size;
-                }
+                        const ttrScores = [];
 
-                function ngram4Similarity(text1, text2) {
-                    return ngramSimilarity(text1, text2, 4);
-                }
-
-                function ngram5Similarity(text1, text2) {
-                    return ngramSimilarity(text1, text2, 5);
-                }
-
-                function ngramWithPunctuationSimilarity(text1, text2, n = 3) {
-                    const getNgrams = (text) => {
-                        const ngrams = new Set();
-                        const clean = text.toLowerCase();
-                        for (let i = 0; i <= clean.length - n; i++) {
-                            ngrams.add(clean.substring(i, i + n));
+                        // Slide window across text
+                        for (let i = 0; i <= cleanWords.length - windowSize; i += stride) {
+                            const window = cleanWords.slice(i, i + windowSize);
+                            const uniqueInWindow = new Set(window);
+                            const windowTTR = uniqueInWindow.size / windowSize;
+                            ttrScores.push(windowTTR);
                         }
-                        return ngrams;
-                    };
 
-                    const ngrams1 = getNgrams(text1);
-                    const ngrams2 = getNgrams(text2);
-                    const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-                    const union = new Set([...ngrams1, ...ngrams2]);
-                    return union.size === 0 ? 0 : intersection.size / union.size;
-                }
+                        if (ttrScores.length === 0) return 0;
 
-                function wordNgramSimilarity(text1, text2, n = 3) {
-                    const getWordNgrams = (text) => {
-                        const words = tokenize(text);
-                        const ngrams = new Set();
-                        for (let i = 0; i <= words.length - n; i++) {
-                            ngrams.add(words.slice(i, i + n).join(' ').toLowerCase());
+                        // Return average TTR across all windows
+                        const avgTTR = ttrScores.reduce((sum, ttr) => sum + ttr, 0) / ttrScores.length;
+                        return avgTTR;
+                    }
+
+            function calculateMATTRSimilarity(text1, text2) {
+                        const mattr1 = calculateMATTR(text1);
+                        const mattr2 = calculateMATTR(text2);
+
+                        // If both have zero MATTR, consider them similar
+                        if (mattr1 === 0 && mattr2 === 0) return 1;
+
+                        // Calculate similarity as 1 - normalized difference
+                        const maxMATTR = Math.max(mattr1, mattr2);
+                        if (maxMATTR === 0) return 1;
+
+                        const diff = Math.abs(mattr1 - mattr2);
+                        return 1 - (diff / maxMATTR);
+                    }
+
+            function calculateTTR(text) {
+                        const words = tokenizeWords(text);
+                        const cleanWords = [];
+
+                        words.forEach(w => {
+                            const clean = w.toLowerCase().replace(/[^a-z']/g, '');
+                            if (clean.length > 0) {
+                                cleanWords.push(clean);
+                            }
+                        });
+
+                        if (cleanWords.length === 0) {
+                            return 0;
                         }
-                        return ngrams;
-                    };
 
-                    const ngrams1 = getWordNgrams(text1);
-                    const ngrams2 = getWordNgrams(text2);
-                    const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
-                    const union = new Set([...ngrams1, ...ngrams2]);
-                    return union.size === 0 ? 0 : intersection.size / union.size;
-                }
+                        const uniqueWords = new Set(cleanWords);
+                        return uniqueWords.size / cleanWords.length;
+                    }
 
-                function sentenceVarianceSimilarity(text1, text2) {
-                    const var1 = sentenceLengthVariance(text1);
-                    const var2 = sentenceLengthVariance(text2);
-                    if (var1 === 0 && var2 === 0) return 1;
-                    return 1 - Math.abs(var1 - var2) / Math.max(var1, var2, 1);
-                }
+            function calculateTTRSimilarity(text1, text2) {
+                        const ttr1 = calculateTTR(text1);
+                        const ttr2 = calculateTTR(text2);
 
-                function wordCountSimilarity(text1, text2) {
-                    const count1 = text1.trim().split(/\\s+/).length;
-                    const count2 = text2.trim().split(/\\s+/).length;
-                    if (count1 === 0 && count2 === 0) return 1;
-                    return 1 - Math.abs(count1 - count2) / Math.max(count1, count2);
-                }
+                        // If both have zero TTR, consider them similar
+                        if (ttr1 === 0 && ttr2 === 0) return 1;
 
-                function avgSentenceLengthSimilarity(text1, text2) {
-                    const sentences1 = text1.split(/[.!?]+/).filter(s => s.trim().length > 0);
-                    const sentences2 = text2.split(/[.!?]+/).filter(s => s.trim().length > 0);
+                        // Calculate similarity as 1 - normalized difference
+                        const maxTTR = Math.max(ttr1, ttr2);
+                        if (maxTTR === 0) return 1;
 
-                    const avg1 = sentences1.reduce((sum, s) => sum + s.trim().split(/\\s+/).length, 0) / sentences1.length;
-                    const avg2 = sentences2.reduce((sum, s) => sum + s.trim().split(/\\s+/).length, 0) / sentences2.length;
+                        const diff = Math.abs(ttr1 - ttr2);
+                        return 1 - (diff / maxTTR);
+                    }
 
-                    if (!avg1 || !avg2) return 0;
-                    return 1 - Math.abs(avg1 - avg2) / Math.max(avg1, avg2);
-                }
+            function calculateTemporalBurstiness(occurrences, totalWords) {
+                        if (occurrences.length === 0 || totalWords === 0) return 0;
 
-                function pronounDensitySimilarity(text1, text2) {
-                    const pronouns = ['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'ours', 'ourselves',
-                                    'you', 'your', 'yours', 'yourself', 'yourselves',
-                                    'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself',
-                                    'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
-                                    'i\\'m', 'i\\'ve', 'i\\'d', 'i\\'ll', 'you\\'re', 'you\\'ve', 'you\\'d', 'you\\'ll',
-                                    'he\\'s', 'he\\'d', 'he\\'ll', 'she\\'s', 'she\\'d', 'she\\'ll', 'it\\'s', 'it\\'d', 'it\\'ll',
-                                    'we\\'re', 'we\\'ve', 'we\\'d', 'we\\'ll', 'they\\'re', 'they\\'ve', 'they\\'d', 'they\\'ll'];
+                        const f = occurrences.length; // frequency
+                        const T = totalWords;
 
-                    const words1 = tokenize(text1);
-                    const words2 = tokenize(text2);
+                        // Pre-compute cumulative count for efficiency (avoid repeated filtering)
+                        const sortedOccurrences = [...occurrences].sort((a, b) => a - b);
 
-                    const count1 = words1.filter(w => pronouns.includes(w.toLowerCase())).length;
-                    const count2 = words2.filter(w => pronouns.includes(w.toLowerCase())).length;
+                        let maxArea = 0;
 
-                    const density1 = words1.length > 0 ? count1 / words1.length : 0;
-                    const density2 = words2.length > 0 ? count2 / words2.length : 0;
+                        // Limit steps for performance - use fewer steps for larger documents
+                        const steps = Math.min(200, T); // Reduced from 1000 to 200
+                        const dt = T / steps;
 
-                    if (density1 === 0 && density2 === 0) return 1;
-                    const maxDensity = Math.max(density1, density2);
-                    if (maxDensity === 0) return 1;
-                    return 1 - Math.abs(density1 - density2) / maxDensity;
-                }
+                        // For each occurrence k, calculate area
+                        for (let k = 0; k < Math.min(f, 20); k++) { // Limit to first 20 occurrence points
+                            const tk = sortedOccurrences[k];
+                            let area = 0;
 
-                function transitionWordsSimilarity(text1, text2) {
-                    const transitions = [
-                        // Addition
-                        'furthermore', 'moreover', 'additionally', 'also', 'besides', 'in addition', 'as well as',
-                        // Example/Clarification
-                        'for example', 'for instance', 'specifically', 'to illustrate', 'namely', 'in other words',
-                        'that is', 'in particular', 'such as',
-                        // Contrast/Opposition
-                        'however', 'nevertheless', 'nonetheless', 'conversely', 'on the other hand', 'in contrast',
-                        'yet', 'still', 'although', 'even though', 'despite', 'regardless', 'alternatively',
-                        // Cause/Effect
-                        'therefore', 'thus', 'consequently', 'as a result', 'accordingly', 'hence', 'for this reason',
-                        'because of this', 'due to', 'since',
-                        // Time/Sequence
-                        'meanwhile', 'subsequently', 'finally', 'firstly', 'secondly', 'thirdly', 'then', 'next',
-                        'afterward', 'previously', 'eventually', 'ultimately', 'later', 'initially', 'formerly',
-                        // Conclusion/Summary
-                        'in conclusion', 'to sum up', 'in summary', 'overall', 'all in all', 'in brief',
-                        'to conclude', 'in the end',
-                        // Emphasis
-                        'indeed', 'in fact', 'certainly', 'undoubtedly', 'notably', 'especially', 'particularly',
-                        'importantly', 'significantly',
-                        // Comparison
-                        'similarly', 'likewise', 'in the same way', 'equally', 'by comparison'
-                    ];
+                            // Pre-calculate cumulative counts at sampled points
+                            let occIdx = 0;
+                            for (let i = 0; i < steps; i++) {
+                                const t = i * dt;
 
-                    const count1 = transitions.reduce((sum, word) =>
-                        sum + (text1.toLowerCase().match(new RegExp('\\\\b' + word + '\\\\b', 'g')) || []).length, 0
-                    );
-                    const count2 = transitions.reduce((sum, word) =>
-                        sum + (text2.toLowerCase().match(new RegExp('\\\\b' + word + '\\\\b', 'g')) || []).length, 0
-                    );
+                                // Efficient cumulative count using sorted array
+                                while (occIdx < f && sortedOccurrences[occIdx] <= t) {
+                                    occIdx++;
+                                }
+                                const Ct = occIdx;
 
-                    const words1 = text1.trim().split(/\\s+/).length;
-                    const words2 = text2.trim().split(/\\s+/).length;
+                                // Linear interpolation: f/T * (t - tk) + k
+                                // Note: Cui et al. (2017) paper uses (k-1) with 1-based indexing;
+                                // we use k with 0-based indexing (mathematically equivalent, verified)
+                                const linearValue = (f / T) * (t - tk) + k;
 
-                    const density1 = (count1 / words1) * 100;
-                    const density2 = (count2 / words2) * 100;
+                                // |C(t) - linear|
+                                const diff = Math.abs(Ct - linearValue);
+                                area += diff * dt;
+                            }
 
-                    if (density1 === 0 && density2 === 0) return 1;
-                    return 1 - Math.abs(density1 - density2) / Math.max(density1, density2, 1);
-                }
+                            if (area > maxArea) {
+                                maxArea = area;
+                            }
+                        }
 
-                function nerSimilarity(text1, text2) {
-                    const extractEntities = (text) => {
-                        const wordCount = tokenize(text).length;
-                        const properNounPattern = /\\b[A-Z][A-Za-z]*(?:\\s+[A-Z][A-Za-z]*)*\\b/g;
-                        const cleanText = text.replace(/([.!?;:,])/g, ' $1 ');
-                        const matches = cleanText.match(properNounPattern) || [];
-                        const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
+                        // Normalize by fT/2 (area of half square)
+                        const normalized = (2 * maxArea) / (f * T);
 
-                        // Advanced filtering: Only include words that appear capitalized in mid-sentence positions
-                        const sentenceBoundaryPattern = /[.!?]\\s+/g;
-                        const sentences = text.split(sentenceBoundaryPattern);
-                        const validEntities = new Set();
+                        return Math.min(1, normalized); // Clamp to [0, 1]
+                    }
 
-                        sentences.forEach(sentence => {
-                            const sentenceMatches = sentence.match(/\\b[A-Z][A-Za-z]*(?:\\s+[A-Z][A-Za-z]*)*\\b/g) || [];
-                            sentenceMatches.slice(1).forEach(match => {
-                                if (match.length > 1 && !commonWords.has(match)) {
-                                    validEntities.add(match);
+            function cosineSimilarity(text1, text2) {
+                        const words1 = tokenize(text1);
+                        const words2 = tokenize(text2);
+                        const freq1 = {};
+                        const freq2 = {};
+                        const allWords = new Set([...words1, ...words2]);
+
+                        words1.forEach(w => freq1[w] = (freq1[w] || 0) + 1);
+                        words2.forEach(w => freq2[w] = (freq2[w] || 0) + 1);
+
+                        let dotProduct = 0, mag1 = 0, mag2 = 0;
+                        allWords.forEach(word => {
+                            const v1 = freq1[word] || 0;
+                            const v2 = freq2[word] || 0;
+                            dotProduct += v1 * v2;
+                            mag1 += v1 * v1;
+                            mag2 += v2 * v2;
+                        });
+
+                        return (mag1 === 0 || mag2 === 0) ? 0 : dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2));
+                    }
+
+            function fuzzyNgramSimilarity(text1, text2, ngramSize = 4, maxDistance = 3) {
+                        // Extract word-level n-grams
+                        const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                        const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+
+                        const ngrams1 = [];
+                        const ngrams2 = [];
+
+                        // Create n-grams
+                        for (let i = 0; i <= words1.length - ngramSize; i++) {
+                            ngrams1.push(words1.slice(i, i + ngramSize).join(' '));
+                        }
+                        for (let i = 0; i <= words2.length - ngramSize; i++) {
+                            ngrams2.push(words2.slice(i, i + ngramSize).join(' '));
+                        }
+
+                        if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
+
+                        // Find fuzzy matches using Levenshtein distance
+                        const matches = new Set();
+
+                        ngrams1.forEach((ng1, idx1) => {
+                            ngrams2.forEach((ng2, idx2) => {
+                                const distance = levenshteinDistance(ng1, ng2);
+                                // Match if distance is within threshold
+                                if (distance <= maxDistance) {
+                                    matches.add(`${idx1}-${idx2}`);
                                 }
                             });
                         });
 
-                        const entities = matches.filter(m => validEntities.has(m));
-                        const uniqueEntities = [...new Set(entities)];
-                        const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
-                        return {
-                            entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
-                            count: uniqueEntities.length,
-                            density: density
+                        // Calculate similarity as proportion of n-grams that have fuzzy matches
+                        const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
+                        return matches.size / totalNgrams;
+                    }
+
+            function jaccardSimilarity(text1, text2) {
+                        const set1 = new Set(tokenize(text1));
+                        const set2 = new Set(tokenize(text2));
+                        const intersection = new Set([...set1].filter(x => set2.has(x)));
+                        const union = new Set([...set1, ...set2]);
+                        return union.size === 0 ? 0 : intersection.size / union.size;
+                    }
+
+            function levenshteinDistance(str1, str2) {
+                        const len1 = str1.length;
+                        const len2 = str2.length;
+                        const matrix = [];
+
+                        // Initialize matrix
+                        for (let i = 0; i <= len1; i++) {
+                            matrix[i] = [i];
+                        }
+                        for (let j = 0; j <= len2; j++) {
+                            matrix[0][j] = j;
+                        }
+
+                        // Fill matrix
+                        for (let i = 1; i <= len1; i++) {
+                            for (let j = 1; j <= len2; j++) {
+                                if (str1[i - 1] === str2[j - 1]) {
+                                    matrix[i][j] = matrix[i - 1][j - 1];
+                                } else {
+                                    matrix[i][j] = Math.min(
+                                        matrix[i - 1][j - 1] + 1, // substitution
+                                        matrix[i][j - 1] + 1,     // insertion
+                                        matrix[i - 1][j] + 1      // deletion
+                                    );
+                                }
+                            }
+                        }
+
+                        return matrix[len1][len2];
+                    }
+
+            function nerSimilarity(text1, text2) {
+                        // Extract named entities using Compromise.js NLP
+                        const extractEntities = (text) => {
+                            const wordCount = tokenize(text).length;
+
+                            if (!window.nlp) {
+                                console.warn('NER: Compromise.js not loaded, using fallback');
+                                // Fallback to simple capitalization pattern
+                                const properNounPattern = /\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b/g;
+                                const matches = text.match(properNounPattern) || [];
+                                const commonWords = new Set(['The', 'This', 'That', 'These', 'Those', 'A', 'An', 'I', 'It', 'He', 'She', 'We', 'They']);
+                                const entities = matches.filter(m => !commonWords.has(m));
+                                const uniqueEntities = [...new Set(entities)];
+
+                                return {
+                                    entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
+                                    entityList: uniqueEntities,
+                                    count: uniqueEntities.length,
+                                    density: wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0,
+                                    wordCount: wordCount,
+                                    people: [],
+                                    places: [],
+                                    organizations: []
+                                };
+                            }
+
+                            try {
+                                const doc = nlp(text);
+
+                                // Extract specific entity types using Compromise.js
+                                const people = doc.people().out('array');
+                                const places = doc.places().out('array');
+                                const organizations = doc.organizations().out('array');
+
+                                // Get proper nouns that aren't already in the above categories
+                                const properNouns = doc.match('#ProperNoun').out('array');
+
+                                // Clean and filter entities
+                                const cleanEntity = (e) => e.trim().replace(/[,\.;:!?]+$/, ''); // Remove trailing punctuation
+                                const isValid = (e) => e.length > 1 && !/^[^a-zA-Z]+$/.test(e); // At least 2 chars and contains letters
+
+                                // Combine and deduplicate (case-insensitive)
+                                const allRaw = [...people, ...places, ...organizations, ...properNouns];
+                                const cleaned = allRaw.map(cleanEntity).filter(isValid);
+                                const lowerMap = new Map();
+                                cleaned.forEach(e => {
+                                    const lower = e.toLowerCase();
+                                    if (!lowerMap.has(lower)) {
+                                        lowerMap.set(lower, e);
+                                    }
+                                });
+                                const uniqueEntities = Array.from(lowerMap.values());
+
+                                // Calculate density (per 100 words)
+                                const density = wordCount > 0 ? (uniqueEntities.length / wordCount) * 100 : 0;
+
+                                return {
+                                    entities: new Set(uniqueEntities.map(e => e.toLowerCase())),
+                                    entityList: uniqueEntities,
+                                    count: uniqueEntities.length,
+                                    density: density,
+                                    wordCount: wordCount,
+                                    people: people.map(cleanEntity).filter(isValid),
+                                    places: places.map(cleanEntity).filter(isValid),
+                                    organizations: organizations.map(cleanEntity).filter(isValid)
+                                };
+                            } catch (error) {
+                                console.error('Error in NLP-based NER:', error);
+                                return {
+                                    entities: new Set(),
+                                    entityList: [],
+                                    count: 0,
+                                    density: 0,
+                                    wordCount: wordCount,
+                                    people: [],
+                                    places: [],
+                                    organizations: []
+                                };
+                            }
                         };
-                    };
 
-                    const entities1 = extractEntities(text1);
-                    const entities2 = extractEntities(text2);
+                        const entities1 = extractEntities(text1);
+                        const entities2 = extractEntities(text2);
 
-                    const intersection = new Set([...entities1.entities].filter(x => entities2.entities.has(x)));
-                    const union = new Set([...entities1.entities, ...entities2.entities]);
-                    const contentSimilarity = union.size === 0 ? 0 : intersection.size / union.size;
+                        // Calculate Jaccard similarity
+                        const intersection = new Set([...entities1.entities].filter(x => entities2.entities.has(x)));
+                        const union = new Set([...entities1.entities, ...entities2.entities]);
+                        const contentSimilarity = union.size === 0 ? 0 : intersection.size / union.size;
 
-                    const densitySimilarity = (() => {
-                        if (entities1.density === 0 && entities2.density === 0) return 1;
-                        const max = Math.max(entities1.density, entities2.density);
-                        return max === 0 ? 0 : 1 - (Math.abs(entities1.density - entities2.density) / max);
-                    })();
+                        // Calculate density similarity (how similar are the usage rates?)
+                        const densitySimilarity = (() => {
+                            if (entities1.density === 0 && entities2.density === 0) return 1;
+                            const max = Math.max(entities1.density, entities2.density);
+                            return max === 0 ? 0 : 1 - (Math.abs(entities1.density - entities2.density) / max);
+                        })();
 
-                    return (contentSimilarity * 0.6) + (densitySimilarity * 0.4);
-                }
-
-                // Levenshtein distance functions
-                function levenshteinDistance(str1, str2) {
-                    const len1 = str1.length;
-                    const len2 = str2.length;
-                    const matrix = [];
-
-                    for (let i = 0; i <= len1; i++) {
-                        matrix[i] = [i];
-                    }
-                    for (let j = 0; j <= len2; j++) {
-                        matrix[0][j] = j;
+                        // Weighted average: 60% content similarity (shared entities), 40% density similarity (usage patterns)
+                        return (contentSimilarity * 0.6) + (densitySimilarity * 0.4);
                     }
 
-                    for (let i = 1; i <= len1; i++) {
-                        for (let j = 1; j <= len2; j++) {
-                            if (str1[i - 1] === str2[j - 1]) {
-                                matrix[i][j] = matrix[i - 1][j - 1];
-                            } else {
-                                matrix[i][j] = Math.min(
-                                    matrix[i - 1][j - 1] + 1,
-                                    matrix[i][j - 1] + 1,
-                                    matrix[i - 1][j] + 1
-                                );
+            function ngram4Similarity(text1, text2) {
+                        const getNgrams = (text) => {
+                            const ngrams = new Set();
+                            const clean = text.toLowerCase().replace(/[^\w\s]/g, '');
+                            for (let i = 0; i <= clean.length - 4; i++) {
+                                ngrams.add(clean.substring(i, i + 4));
                             }
-                        }
-                    }
-
-                    return matrix[len1][len2];
-                }
-
-                function wordLevelLevenshteinDistance(phrase1, phrase2) {
-                    const words1 = phrase1.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-                    const words2 = phrase2.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-
-                    const len1 = words1.length;
-                    const len2 = words2.length;
-                    const matrix = [];
-
-                    for (let i = 0; i <= len1; i++) {
-                        matrix[i] = [i];
-                    }
-                    for (let j = 0; j <= len2; j++) {
-                        matrix[0][j] = j;
-                    }
-
-                    for (let i = 1; i <= len1; i++) {
-                        for (let j = 1; j <= len2; j++) {
-                            if (words1[i - 1] === words2[j - 1]) {
-                                matrix[i][j] = matrix[i - 1][j - 1];
-                            } else {
-                                matrix[i][j] = Math.min(
-                                    matrix[i - 1][j - 1] + 1,
-                                    matrix[i][j - 1] + 1,
-                                    matrix[i - 1][j] + 1
-                                );
-                            }
-                        }
-                    }
-
-                    return matrix[len1][len2];
-                }
-
-                function fuzzyNgramSimilarity(text1, text2, ngramSize = 4, maxDistance = 3) {
-                    const words1 = text1.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-                    const words2 = text2.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-
-                    const ngrams1 = [];
-                    const ngrams2 = [];
-
-                    for (let i = 0; i <= words1.length - ngramSize; i++) {
-                        ngrams1.push(words1.slice(i, i + ngramSize).join(' '));
-                    }
-                    for (let i = 0; i <= words2.length - ngramSize; i++) {
-                        ngrams2.push(words2.slice(i, i + ngramSize).join(' '));
-                    }
-
-                    if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
-
-                    const matches = new Set();
-
-                    ngrams1.forEach((ng1, idx1) => {
-                        ngrams2.forEach((ng2, idx2) => {
-                            const distance = levenshteinDistance(ng1, ng2);
-                            if (distance <= maxDistance) {
-                                matches.add(\`\${idx1}-\${idx2}\`);
-                            }
-                        });
-                    });
-
-                    const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
-                    return matches.size / totalNgrams;
-                }
-
-                function wordLevelFuzzyNgramSimilarity(text1, text2, ngramSize = 4, maxWordDistance = 1) {
-                    const words1 = text1.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-                    const words2 = text2.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-
-                    const ngrams1 = [];
-                    const ngrams2 = [];
-
-                    for (let i = 0; i <= words1.length - ngramSize; i++) {
-                        ngrams1.push(words1.slice(i, i + ngramSize));
-                    }
-                    for (let i = 0; i <= words2.length - ngramSize; i++) {
-                        ngrams2.push(words2.slice(i, i + ngramSize));
-                    }
-
-                    if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
-
-                    const matches = new Set();
-
-                    ngrams1.forEach((ng1, idx1) => {
-                        ngrams2.forEach((ng2, idx2) => {
-                            const distance = wordLevelLevenshteinDistance(ng1.join(' '), ng2.join(' '));
-                            if (distance <= maxWordDistance) {
-                                matches.add(\`\${idx1}-\${idx2}\`);
-                            }
-                        });
-                    });
-
-                    const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
-                    return matches.size / totalNgrams;
-                }
-
-                // Temporal Burstiness functions
-                function calculateTemporalBurstiness(occurrences, totalWords) {
-                    if (occurrences.length === 0 || totalWords === 0) return 0;
-
-                    const f = occurrences.length;
-                    const T = totalWords;
-                    const sortedOccurrences = [...occurrences].sort((a, b) => a - b);
-
-                    let maxArea = 0;
-                    const steps = Math.min(200, T);
-                    const dt = T / steps;
-
-                    for (let k = 0; k < Math.min(f, 20); k++) {
-                        const tk = sortedOccurrences[k];
-                        let area = 0;
-                        let occIdx = 0;
-
-                        for (let i = 0; i < steps; i++) {
-                            const t = i * dt;
-                            while (occIdx < f && sortedOccurrences[occIdx] <= t) {
-                                occIdx++;
-                            }
-                            const Ct = occIdx;
-                            // Note: Cui et al. (2017) paper uses (k-1) with 1-based indexing;
-                            // we use k with 0-based indexing (mathematically equivalent, verified)
-                            const linearValue = (f / T) * (t - tk) + k;
-                            const diff = Math.abs(Ct - linearValue);
-                            area += diff * dt;
-                        }
-
-                        if (area > maxArea) {
-                            maxArea = area;
-                        }
-                    }
-
-                    const normalized = (2 * maxArea) / (f * T);
-                    return Math.min(1, normalized);
-                }
-
-                function temporalBurstinessSimilarity(text1, text2) {
-                    const stopWords = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
-                                               'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
-                                               'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
-                                               'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their']);
-
-                    const getWordPositions = (text) => {
-                        const words = text.toLowerCase().match(/\\b[a-z]+\\b/g) || [];
-                        const positions = {};
-                        words.forEach((word, idx) => {
-                            if (!stopWords.has(word) && word.length > 3) {
-                                if (!positions[word]) positions[word] = [];
-                                positions[word].push(idx);
-                            }
-                        });
-                        return { positions, totalWords: words.length };
-                    };
-
-                    const data1 = getWordPositions(text1);
-                    const data2 = getWordPositions(text2);
-
-                    const commonWords = Object.keys(data1.positions).filter(word =>
-                        data2.positions[word] &&
-                        data1.positions[word].length >= 2 &&
-                        data2.positions[word].length >= 2
-                    );
-
-                    if (commonWords.length === 0) return 0;
-
-                    const burstinessScores = commonWords.map(word => {
-                        const burst1 = calculateTemporalBurstiness(data1.positions[word], data1.totalWords);
-                        const burst2 = calculateTemporalBurstiness(data2.positions[word], data2.totalWords);
-                        return 1 - Math.abs(burst1 - burst2);
-                    });
-
-                    return burstinessScores.reduce((a, b) => a + b, 0) / burstinessScores.length;
-                }
-
-                // TTR and MATTR functions
-                function tokenizeWords(text) {
-                    return text.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
-                }
-
-                function calculateTTR(text) {
-                    const words = tokenizeWords(text);
-                    const cleanWords = [];
-
-                    words.forEach(w => {
-                        const clean = w.toLowerCase().replace(/[^a-z']/g, '');
-                        if (clean.length > 0) {
-                            cleanWords.push(clean);
-                        }
-                    });
-
-                    if (cleanWords.length === 0) return 0;
-
-                    const uniqueWords = new Set(cleanWords);
-                    return uniqueWords.size / cleanWords.length;
-                }
-
-                function calculateTTRSimilarity(text1, text2) {
-                    const ttr1 = calculateTTR(text1);
-                    const ttr2 = calculateTTR(text2);
-
-                    if (ttr1 === 0 && ttr2 === 0) return 1;
-
-                    const maxTTR = Math.max(ttr1, ttr2);
-                    if (maxTTR === 0) return 1;
-
-                    const diff = Math.abs(ttr1 - ttr2);
-                    return 1 - (diff / maxTTR);
-                }
-
-                function calculateMATTR(text, windowSize = 50, stride = 10) {
-                    const words = tokenizeWords(text);
-                    const cleanWords = [];
-
-                    words.forEach(w => {
-                        const clean = w.toLowerCase().replace(/[^a-z']/g, '');
-                        if (clean.length > 0) {
-                            cleanWords.push(clean);
-                        }
-                    });
-
-                    if (cleanWords.length < windowSize) {
-                        const uniqueWords = new Set(cleanWords);
-                        return cleanWords.length > 0 ? uniqueWords.size / cleanWords.length : 0;
-                    }
-
-                    const ttrScores = [];
-
-                    for (let i = 0; i <= cleanWords.length - windowSize; i += stride) {
-                        const window = cleanWords.slice(i, i + windowSize);
-                        const uniqueInWindow = new Set(window);
-                        const windowTTR = uniqueInWindow.size / windowSize;
-                        ttrScores.push(windowTTR);
-                    }
-
-                    if (ttrScores.length === 0) return 0;
-
-                    const avgTTR = ttrScores.reduce((sum, ttr) => sum + ttr, 0) / ttrScores.length;
-                    return avgTTR;
-                }
-
-                function calculateMATTRSimilarity(text1, text2) {
-                    const mattr1 = calculateMATTR(text1);
-                    const mattr2 = calculateMATTR(text2);
-
-                    if (mattr1 === 0 && mattr2 === 0) return 1;
-
-                    const maxMATTR = Math.max(mattr1, mattr2);
-                    if (maxMATTR === 0) return 1;
-
-                    const diff = Math.abs(mattr1 - mattr2);
-                    return 1 - (diff / maxMATTR);
-                }
-
-                // Calculate all metrics for given text pairs
-                function calculateMetricsForPairs(pairs, selectedMetrics) {
-                    return pairs.map(pair => {
-                        const metrics = {};
-
-                        selectedMetrics.forEach(metricId => {
-                            switch(metricId) {
-                                case 'cosine':
-                                    metrics.cosine = cosineSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'jaccard':
-                                    metrics.jaccard = jaccardSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'ngram':
-                                    metrics.ngram = ngramSimilarity(pair.text1, pair.text2, 3);
-                                    break;
-                                case 'sentenceVariance':
-                                    metrics.sentenceVariance = sentenceVarianceSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'wordCount':
-                                    metrics.wordCount = wordCountSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'avgSentenceLength':
-                                    metrics.avgSentenceLength = avgSentenceLengthSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'temporalBurstiness':
-                                    metrics.temporalBurstiness = temporalBurstinessSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'pronounDensity':
-                                    metrics.pronounDensity = pronounDensitySimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'transitionWords':
-                                    metrics.transitionWords = transitionWordsSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'ngramPunctuation':
-                                    metrics.ngramPunctuation = ngramWithPunctuationSimilarity(pair.text1, pair.text2, 3);
-                                    break;
-                                case 'wordNgram':
-                                    metrics.wordNgram = wordNgramSimilarity(pair.text1, pair.text2, 3);
-                                    break;
-                                case 'ngram4':
-                                    metrics.ngram4 = ngram4Similarity(pair.text1, pair.text2);
-                                    break;
-                                case 'ngram5':
-                                    metrics.ngram5 = ngram5Similarity(pair.text1, pair.text2);
-                                    break;
-                                case 'ner':
-                                    metrics.ner = nerSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'fuzzyNgram3':
-                                    metrics.fuzzyNgram3 = fuzzyNgramSimilarity(pair.text1, pair.text2, 3, 5);
-                                    break;
-                                case 'fuzzyNgram6':
-                                    metrics.fuzzyNgram6 = fuzzyNgramSimilarity(pair.text1, pair.text2, 6, 13);
-                                    break;
-                                case 'wordLevelFuzzy3':
-                                    metrics.wordLevelFuzzy3 = wordLevelFuzzyNgramSimilarity(pair.text1, pair.text2, 3, 1);
-                                    break;
-                                case 'wordLevelFuzzy5':
-                                    metrics.wordLevelFuzzy5 = wordLevelFuzzyNgramSimilarity(pair.text1, pair.text2, 5, 2);
-                                    break;
-                                case 'bleu':
-                                    metrics.bleu = bleuSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'burrowsDelta':
-                                    // Burrow's Delta requires corpus stats - will be calculated in main thread
-                                    metrics.burrowsDelta = 0;
-                                    break;
-                                case 'perplexity':
-                                    // Perplexity metric requires API calls - will be calculated in main thread
-                                    metrics.perplexity = 0;
-                                    break;
-                                case 'transformerSemantic':
-                                    // Transformer metric cannot run in worker - will be calculated in main thread
-                                    metrics.transformerSemantic = 0;
-                                    break;
-                                case 'posSyntactic':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.posSyntactic = 0;
-                                    break;
-                                case 'shaib4':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.shaib4 = 0;
-                                    break;
-                                case 'shaib5':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.shaib5 = 0;
-                                    break;
-                                case 'shaib6':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.shaib6 = 0;
-                                    break;
-                                case 'shaib6lev1':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.shaib6lev1 = 0;
-                                    break;
-                                case 'shaib6lev2':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.shaib6lev2 = 0;
-                                    break;
-                                case 'shaib6lev3':
-                                    // POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.shaib6lev3 = 0;
-                                    break;
-                                case 'simplePOS':
-                                    // Simple POS metric cannot run in worker - will be calculated in main thread
-                                    metrics.simplePOS = 0;
-                                    break;
-                                case 'functionWordDist':
-                                    // Function word metric cannot run in worker - will be calculated in main thread
-                                    metrics.functionWordDist = 0;
-                                    break;
-                                case 'ttr':
-                                    metrics.ttr = calculateTTRSimilarity(pair.text1, pair.text2);
-                                    break;
-                                case 'mattr':
-                                    metrics.mattr = calculateMATTRSimilarity(pair.text1, pair.text2);
-                                    break;
-                            }
-                        });
-
-                        return {
-                            id1: pair.id1,
-                            id2: pair.id2,
-                            text1: pair.text1,
-                            text2: pair.text2,
-                            metrics: metrics
+                            return ngrams;
                         };
-                    });
-                }
 
-                // Worker message handler
-                self.onmessage = function(e) {
-                    const { pairs, selectedMetrics, workerId } = e.data;
-                    const results = calculateMetricsForPairs(pairs, selectedMetrics);
-                    self.postMessage({ workerId, results });
-                };
-            `;
+                        const ngrams1 = getNgrams(text1);
+                        const ngrams2 = getNgrams(text2);
+                        const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
+                        const union = new Set([...ngrams1, ...ngrams2]);
+                        return union.size === 0 ? 0 : intersection.size / union.size;
+                    }
+
+            function ngram5Similarity(text1, text2) {
+                        const getNgrams = (text) => {
+                            const ngrams = new Set();
+                            const clean = text.toLowerCase().replace(/[^\w\s]/g, '');
+                            for (let i = 0; i <= clean.length - 5; i++) {
+                                ngrams.add(clean.substring(i, i + 5));
+                            }
+                            return ngrams;
+                        };
+
+                        const ngrams1 = getNgrams(text1);
+                        const ngrams2 = getNgrams(text2);
+                        const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
+                        const union = new Set([...ngrams1, ...ngrams2]);
+                        return union.size === 0 ? 0 : intersection.size / union.size;
+                    }
+
+            function ngramSimilarity(text1, text2, n = 3) {
+                        const getNgrams = (text) => {
+                            const ngrams = new Set();
+                            const clean = text.toLowerCase().replace(/[^\w\s]/g, '');
+                            for (let i = 0; i <= clean.length - n; i++) {
+                                ngrams.add(clean.substring(i, i + n));
+                            }
+                            return ngrams;
+                        };
+
+                        const ngrams1 = getNgrams(text1);
+                        const ngrams2 = getNgrams(text2);
+                        const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
+                        const union = new Set([...ngrams1, ...ngrams2]);
+                        return union.size === 0 ? 0 : intersection.size / union.size;
+                    }
+
+            function ngramWithPunctuationSimilarity(text1, text2, n = 3) {
+                        const getNgrams = (text) => {
+                            const ngrams = new Set();
+                            const clean = text.toLowerCase(); // Keep punctuation, just lowercase
+                            for (let i = 0; i <= clean.length - n; i++) {
+                                ngrams.add(clean.substring(i, i + n));
+                            }
+                            return ngrams;
+                        };
+
+                        const ngrams1 = getNgrams(text1);
+                        const ngrams2 = getNgrams(text2);
+                        const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
+                        const union = new Set([...ngrams1, ...ngrams2]);
+                        return union.size === 0 ? 0 : intersection.size / union.size;
+                    }
+
+            function pronounDensitySimilarity(text1, text2) {
+                        const pronouns = ['i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'ours', 'ourselves',
+                                        'you', 'your', 'yours', 'yourself', 'yourselves',
+                                        'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself',
+                                        'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
+                                        'i\'m', 'i\'ve', 'i\'d', 'i\'ll', 'you\'re', 'you\'ve', 'you\'d', 'you\'ll',
+                                        'he\'s', 'he\'d', 'he\'ll', 'she\'s', 'she\'d', 'she\'ll', 'it\'s', 'it\'d', 'it\'ll',
+                                        'we\'re', 'we\'ve', 'we\'d', 'we\'ll', 'they\'re', 'they\'ve', 'they\'d', 'they\'ll'];
+
+                        const words1 = tokenize(text1);
+                        const words2 = tokenize(text2);
+
+                        const count1 = words1.filter(w => pronouns.includes(w.toLowerCase())).length;
+                        const count2 = words2.filter(w => pronouns.includes(w.toLowerCase())).length;
+
+                        const density1 = words1.length > 0 ? count1 / words1.length : 0;
+                        const density2 = words2.length > 0 ? count2 / words2.length : 0;
+
+                        if (density1 === 0 && density2 === 0) return 1;
+                        const maxDensity = Math.max(density1, density2);
+                        if (maxDensity === 0) return 1;
+                        return 1 - Math.abs(density1 - density2) / maxDensity;
+                    }
+
+            function sentenceLengthVariance(text) {
+                        const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+                        if (sentences.length === 0) return 0;
+                        const lengths = sentences.map(s => s.trim().split(/\s+/).length);
+                        const mean = lengths.reduce((a,b) => a+b, 0) / lengths.length;
+                        const variance = lengths.reduce((sum, len) => sum + Math.pow(len - mean, 2), 0) / lengths.length;
+                        return variance;
+                    }
+
+            function sentenceVarianceSimilarity(text1, text2) {
+                        const var1 = sentenceLengthVariance(text1);
+                        const var2 = sentenceLengthVariance(text2);
+                        if (var1 === 0 && var2 === 0) return 1;
+                        return 1 - Math.abs(var1 - var2) / Math.max(var1, var2, 1);
+                    }
+
+            function temporalBurstinessSimilarity(text1, text2) {
+                        // Pairwise temporal burstiness comparison using word positions
+                        const stopWords = new Set(['the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
+                                                   'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
+                                                   'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
+                                                   'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their']);
+
+                        // Track word positions for each text
+                        const getWordPositions = (text) => {
+                            const words = text.toLowerCase().match(/\b[a-z]+\b/g) || [];
+                            const positions = {};
+                            words.forEach((word, idx) => {
+                                if (!stopWords.has(word) && word.length > 3) {
+                                    if (!positions[word]) positions[word] = [];
+                                    positions[word].push(idx);
+                                }
+                            });
+                            return { positions, totalWords: words.length };
+                        };
+
+                        const data1 = getWordPositions(text1);
+                        const data2 = getWordPositions(text2);
+
+                        // Find common significant words (appear at least 2 times in each)
+                        const commonWords = Object.keys(data1.positions).filter(word =>
+                            data2.positions[word] &&
+                            data1.positions[word].length >= 2 &&
+                            data2.positions[word].length >= 2
+                        );
+
+                        if (commonWords.length === 0) return 0; // No shared repeated words = no similarity
+
+                        // Calculate burstiness for common words in each text
+                        const burstinessScores = commonWords.map(word => {
+                            const burst1 = calculateTemporalBurstiness(data1.positions[word], data1.totalWords);
+                            const burst2 = calculateTemporalBurstiness(data2.positions[word], data2.totalWords);
+
+                            // Similarity is 1 minus the absolute difference
+                            return 1 - Math.abs(burst1 - burst2);
+                        });
+
+                        // Return average similarity across all common words
+                        return burstinessScores.reduce((a, b) => a + b, 0) / burstinessScores.length;
+                    }
+
+            function tokenize(text) {
+                        return text.toLowerCase()
+                            .replace(/[\u2018\u2019\u201C\u201D]/g, "'")  // Normalize smart quotes to straight quotes
+                            .replace(/[^\w\s']/g, ' ')  // Keep apostrophes for contractions
+                            .split(/\s+/)
+                            .filter(w => w.length > 0);  // Changed from > 2 to > 0 to allow pronouns like "i", "me", "we"
+                    }
+
+            function tokenizeWords(text) {
+                        // Lowercase and split on whitespace, filter empty
+                        return text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                    }
+
+            function transitionWordsSimilarity(text1, text2) {
+                        const transitions = [
+                            // Addition
+                            'furthermore', 'moreover', 'additionally', 'also', 'besides', 'in addition', 'as well as',
+                            // Example/Clarification
+                            'for example', 'for instance', 'specifically', 'to illustrate', 'namely', 'in other words',
+                            'that is', 'in particular', 'such as',
+                            // Contrast/Opposition
+                            'however', 'nevertheless', 'nonetheless', 'conversely', 'on the other hand', 'in contrast',
+                            'yet', 'still', 'although', 'even though', 'despite', 'regardless', 'alternatively',
+                            // Cause/Effect
+                            'therefore', 'thus', 'consequently', 'as a result', 'accordingly', 'hence', 'for this reason',
+                            'because of this', 'due to', 'since',
+                            // Time/Sequence
+                            'meanwhile', 'subsequently', 'finally', 'firstly', 'secondly', 'thirdly', 'then', 'next',
+                            'afterward', 'previously', 'eventually', 'ultimately', 'later', 'initially', 'formerly',
+                            // Conclusion/Summary
+                            'in conclusion', 'to sum up', 'in summary', 'overall', 'all in all', 'in brief',
+                            'to conclude', 'in the end',
+                            // Emphasis
+                            'indeed', 'in fact', 'certainly', 'undoubtedly', 'notably', 'especially', 'particularly',
+                            'importantly', 'significantly',
+                            // Comparison
+                            'similarly', 'likewise', 'in the same way', 'equally', 'by comparison'
+                        ];
+
+                        const count1 = transitions.reduce((sum, word) =>
+                            sum + (text1.toLowerCase().match(new RegExp('\\b' + word + '\\b', 'g')) || []).length, 0
+                        );
+                        const count2 = transitions.reduce((sum, word) =>
+                            sum + (text2.toLowerCase().match(new RegExp('\\b' + word + '\\b', 'g')) || []).length, 0
+                        );
+
+                        const words1 = text1.trim().split(/\s+/).length;
+                        const words2 = text2.trim().split(/\s+/).length;
+
+                        const density1 = (count1 / words1) * 100;
+                        const density2 = (count2 / words2) * 100;
+
+                        if (density1 === 0 && density2 === 0) return 1;
+                        return 1 - Math.abs(density1 - density2) / Math.max(density1, density2, 1);
+                    }
+
+            function wordCountSimilarity(text1, text2) {
+                        const count1 = text1.trim().split(/\s+/).length;
+                        const count2 = text2.trim().split(/\s+/).length;
+                        if (count1 === 0 && count2 === 0) return 1;
+                        return 1 - Math.abs(count1 - count2) / Math.max(count1, count2);
+                    }
+
+            function wordLevelFuzzyNgramSimilarity(text1, text2, ngramSize = 4, maxWordDistance = 1) {
+                        // Extract word-level n-grams
+                        const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                        const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+
+                        const ngrams1 = [];
+                        const ngrams2 = [];
+
+                        // Create n-grams (arrays of words)
+                        for (let i = 0; i <= words1.length - ngramSize; i++) {
+                            ngrams1.push(words1.slice(i, i + ngramSize));
+                        }
+                        for (let i = 0; i <= words2.length - ngramSize; i++) {
+                            ngrams2.push(words2.slice(i, i + ngramSize));
+                        }
+
+                        if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
+
+                        // Find fuzzy matches using word-level Levenshtein distance
+                        const matches = new Set();
+
+                        ngrams1.forEach((ng1, idx1) => {
+                            ngrams2.forEach((ng2, idx2) => {
+                                // Compare word arrays
+                                const distance = wordLevelLevenshteinDistance(ng1.join(' '), ng2.join(' '));
+                                // Match if word-level distance is within threshold
+                                if (distance <= maxWordDistance) {
+                                    matches.add(`${idx1}-${idx2}`);
+                                }
+                            });
+                        });
+
+                        // Calculate similarity as proportion of n-grams that have fuzzy matches
+                        const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
+                        return matches.size / totalNgrams;
+                    }
+
+            function wordLevelLevenshteinDistance(phrase1, phrase2) {
+                        const words1 = phrase1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                        const words2 = phrase2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+
+                        const len1 = words1.length;
+                        const len2 = words2.length;
+                        const matrix = [];
+
+                        // Initialize matrix
+                        for (let i = 0; i <= len1; i++) {
+                            matrix[i] = [i];
+                        }
+                        for (let j = 0; j <= len2; j++) {
+                            matrix[0][j] = j;
+                        }
+
+                        // Fill matrix - comparing words instead of characters
+                        for (let i = 1; i <= len1; i++) {
+                            for (let j = 1; j <= len2; j++) {
+                                if (words1[i - 1] === words2[j - 1]) {
+                                    matrix[i][j] = matrix[i - 1][j - 1];
+                                } else {
+                                    matrix[i][j] = Math.min(
+                                        matrix[i - 1][j - 1] + 1, // word substitution
+                                        matrix[i][j - 1] + 1,     // word insertion
+                                        matrix[i - 1][j] + 1      // word deletion
+                                    );
+                                }
+                            }
+                        }
+
+                        return matrix[len1][len2];
+                    }
+
+            function wordNgramSimilarity(text1, text2, n = 3) {
+                        const getWordNgrams = (text) => {
+                            const words = tokenize(text); // Use existing tokenize function
+                            const ngrams = new Set();
+                            for (let i = 0; i <= words.length - n; i++) {
+                                ngrams.add(words.slice(i, i + n).join(' ').toLowerCase());
+                            }
+                            return ngrams;
+                        };
+
+                        const ngrams1 = getWordNgrams(text1);
+                        const ngrams2 = getWordNgrams(text2);
+                        const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
+                        const union = new Set([...ngrams1, ...ngrams2]);
+                        return union.size === 0 ? 0 : intersection.size / union.size;
+                    }
+
+            return {
+                avgSentenceLengthSimilarity,
+                calculateMATTR,
+                calculateMATTRSimilarity,
+                calculateTTR,
+                calculateTTRSimilarity,
+                calculateTemporalBurstiness,
+                cosineSimilarity,
+                fuzzyNgramSimilarity,
+                jaccardSimilarity,
+                levenshteinDistance,
+                nerSimilarity,
+                ngram4Similarity,
+                ngram5Similarity,
+                ngramSimilarity,
+                ngramWithPunctuationSimilarity,
+                pronounDensitySimilarity,
+                sentenceLengthVariance,
+                sentenceVarianceSimilarity,
+                temporalBurstinessSimilarity,
+                tokenize,
+                tokenizeWords,
+                transitionWordsSimilarity,
+                wordCountSimilarity,
+                wordLevelFuzzyNgramSimilarity,
+                wordLevelLevenshteinDistance,
+                wordNgramSimilarity,
+            };
+        }
+
+        // Publish into the page scope so existing call sites keep working unchanged.
+        Object.assign(window, sharedMetricFunctions());
+
+        // Worker-side entry point: the dispatch loop and message handler. Kept as a
+        // real function (not a string) so it is syntax-checked and debuggable; it is
+        // stringified into the worker below.
+        function workerMetricsEntry() {
+            // Function word distribution - requires Compromise.js, calculated in main thread
+
+            // Levenshtein distance functions
+
+            // Temporal Burstiness functions
+
+            // TTR and MATTR functions
+
+            // Calculate all metrics for given text pairs
+            function calculateMetricsForPairs(pairs, selectedMetrics) {
+                return pairs.map(pair => {
+                    const metrics = {};
+
+                    selectedMetrics.forEach(metricId => {
+                        switch(metricId) {
+                            case 'cosine':
+                                metrics.cosine = cosineSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'jaccard':
+                                metrics.jaccard = jaccardSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'ngram':
+                                metrics.ngram = ngramSimilarity(pair.text1, pair.text2, 3);
+                                break;
+                            case 'sentenceVariance':
+                                metrics.sentenceVariance = sentenceVarianceSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'wordCount':
+                                metrics.wordCount = wordCountSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'avgSentenceLength':
+                                metrics.avgSentenceLength = avgSentenceLengthSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'temporalBurstiness':
+                                metrics.temporalBurstiness = temporalBurstinessSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'pronounDensity':
+                                metrics.pronounDensity = pronounDensitySimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'transitionWords':
+                                metrics.transitionWords = transitionWordsSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'ngramPunctuation':
+                                metrics.ngramPunctuation = ngramWithPunctuationSimilarity(pair.text1, pair.text2, 3);
+                                break;
+                            case 'wordNgram':
+                                metrics.wordNgram = wordNgramSimilarity(pair.text1, pair.text2, 3);
+                                break;
+                            case 'ngram4':
+                                metrics.ngram4 = ngram4Similarity(pair.text1, pair.text2);
+                                break;
+                            case 'ngram5':
+                                metrics.ngram5 = ngram5Similarity(pair.text1, pair.text2);
+                                break;
+                            case 'ner':
+                                // null => Compromise unavailable here; the main thread backfills with the same function.
+                                metrics.ner = self.__compromiseReady
+                                    ? nerSimilarity(pair.text1, pair.text2)
+                                    : null;
+                                break;
+                            case 'fuzzyNgram3':
+                                metrics.fuzzyNgram3 = fuzzyNgramSimilarity(pair.text1, pair.text2, 3, 5);
+                                break;
+                            case 'fuzzyNgram6':
+                                metrics.fuzzyNgram6 = fuzzyNgramSimilarity(pair.text1, pair.text2, 6, 13);
+                                break;
+                            case 'wordLevelFuzzy3':
+                                metrics.wordLevelFuzzy3 = wordLevelFuzzyNgramSimilarity(pair.text1, pair.text2, 3, 1);
+                                break;
+                            case 'wordLevelFuzzy5':
+                                metrics.wordLevelFuzzy5 = wordLevelFuzzyNgramSimilarity(pair.text1, pair.text2, 5, 2);
+                                break;
+                            case 'bleu':
+                                metrics.bleu = bleuSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'burrowsDelta':
+                                // Burrow's Delta requires corpus stats - will be calculated in main thread
+                                metrics.burrowsDelta = 0;
+                                break;
+                            case 'perplexity':
+                                // Perplexity metric requires API calls - will be calculated in main thread
+                                metrics.perplexity = 0;
+                                break;
+                            case 'transformerSemantic':
+                                // Transformer metric cannot run in worker - will be calculated in main thread
+                                metrics.transformerSemantic = 0;
+                                break;
+                            case 'posSyntactic':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.posSyntactic = 0;
+                                break;
+                            case 'shaib4':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.shaib4 = 0;
+                                break;
+                            case 'shaib5':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.shaib5 = 0;
+                                break;
+                            case 'shaib6':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.shaib6 = 0;
+                                break;
+                            case 'shaib6lev1':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.shaib6lev1 = 0;
+                                break;
+                            case 'shaib6lev2':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.shaib6lev2 = 0;
+                                break;
+                            case 'shaib6lev3':
+                                // POS metric cannot run in worker - will be calculated in main thread
+                                metrics.shaib6lev3 = 0;
+                                break;
+                            case 'simplePOS':
+                                // Simple POS metric cannot run in worker - will be calculated in main thread
+                                metrics.simplePOS = 0;
+                                break;
+                            case 'functionWordDist':
+                                // Function word metric cannot run in worker - will be calculated in main thread
+                                metrics.functionWordDist = 0;
+                                break;
+                            case 'ttr':
+                                metrics.ttr = calculateTTRSimilarity(pair.text1, pair.text2);
+                                break;
+                            case 'mattr':
+                                metrics.mattr = calculateMATTRSimilarity(pair.text1, pair.text2);
+                                break;
+                        }
+                    });
+
+                    return {
+                        id1: pair.id1,
+                        id2: pair.id2,
+                        text1: pair.text1,
+                        text2: pair.text2,
+                        metrics: metrics
+                    };
+                });
+            }
+
+            // Worker message handler
+            self.onmessage = function(e) {
+                const { pairs, selectedMetrics, workerId } = e.data;
+                const results = calculateMetricsForPairs(pairs, selectedMetrics);
+                self.postMessage({ workerId, results });
+            };
+
+        }
+
+        function createMetricsWorker() {
+            // Absolute URL: a blob worker cannot resolve a relative path reliably.
+            const compromiseUrl = new URL('./libs/compromise.min.js', location.href).href;
+
+            // Concatenation, not a template literal: the shared source contains its own
+            // `${...}` template expressions, which a literal here would interpolate.
+            const workerCode = [
+                'self.__compromiseReady = false;',
+                'try {',
+                '    importScripts(' + JSON.stringify(compromiseUrl) + ');',
+                '    self.window = self;',
+                '    self.__compromiseReady = typeof self.nlp === "function";',
+                '} catch (e) {',
+                '    console.warn("Worker could not load Compromise; NER deferred to the main thread.", e);',
+                '}',
+                'Object.assign(self, (' + sharedMetricFunctions.toString() + ')());',
+                '(' + workerMetricsEntry.toString() + ')();'
+            ].join('\n');
 
             const blob = new Blob([workerCode], { type: 'application/javascript' });
             return new Worker(URL.createObjectURL(blob));
@@ -10708,6 +10527,47 @@
                             `Processing metrics (single-threaded)... (${i + 1}/${totalPairs})`,
                             'Please wait...');
                         await sleep(0);
+                    }
+                }
+            }
+
+            // PHASE 1.4: Backfill NER for any pair the worker deferred.
+            // The worker sets ner to null when importScripts() could not load Compromise
+            // (a blob worker on a file:// origin, for instance). Computing it here keeps
+            // every NER score on the same Compromise implementation instead of letting the
+            // worker fall back to a different algorithm. This also has to happen before
+            // normalization: isNaN(null) is false, so a leftover null would survive the
+            // filters in Phase 2/3 and be scored as a zero.
+            if (selectedMetrics.includes('ner')) {
+                const deferredNer = pairMetrics.filter(p => p.metrics.ner === null || p.metrics.ner === undefined);
+
+                if (deferredNer.length > 0) {
+                    updateProgress(0, deferredNer.length, 'Calculating named entity similarity...', 'Completing pairs deferred by the workers...');
+                    await sleep(0);
+
+                    for (let i = 0; i < deferredNer.length; i++) {
+                        if (cancelRequested) {
+                            hideProgress();
+                            analysisIsRunning = false;
+                            cancelRequested = false;
+                            alert('Analysis cancelled by user.');
+                            return;
+                        }
+
+                        const pair = deferredNer[i];
+                        try {
+                            pair.metrics.ner = nerSimilarity(pair.text1, pair.text2);
+                        } catch (error) {
+                            console.error('Error calculating NER similarity for pair:', error);
+                            pair.metrics.ner = 0;
+                        }
+
+                        if (i % 10 === 0 || i === deferredNer.length - 1) {
+                            updateProgress(i + 1, deferredNer.length,
+                                `Calculating named entity similarity... (${i + 1}/${deferredNer.length})`,
+                                'Using the same NLP path as the workers...');
+                            await sleep(0);
+                        }
                     }
                 }
             }
@@ -12014,6 +11874,7 @@
 
                     // Update stats
                     updateVisualizationStats(coordinates);
+                    renderReferenceReport();
 
                     // Hide loading, show content
                     loading.style.display = 'none';
@@ -12072,28 +11933,110 @@
             ctx.fillText('Similarity Component 2', 0, 0);
             ctx.restore();
 
+            // Keep the unscaled MDS coordinates: redrawing has to re-scale from these, not
+            // from the screen positions below. scaleY inverts, so feeding screen coordinates
+            // back through it flips the plot vertically on every redraw.
+            window.visualizationCoordinates = coordinates;
+
             // Store scaled points for interactivity
             window.visualizationPoints = coordinates.map((coord, i) => ({
                 x: scaleX(coord.x),
                 y: scaleY(coord.y),
                 id: responses[i].id,
                 text: responses[i].text,
+                isReference: !!responses[i].isReference,
                 index: i
             }));
 
-            // Draw all points
-            window.visualizationPoints.forEach(point => {
+            // Draw responses first, then references on top so a reference is never hidden
+            // underneath a cluster of responses.
+            const responsePoints = window.visualizationPoints.filter(p => !p.isReference);
+            const referencePoints = window.visualizationPoints.filter(p => p.isReference);
+
+            responsePoints.forEach(point => {
                 ctx.beginPath();
                 ctx.arc(point.x, point.y, 6, 0, 2 * Math.PI);
-                ctx.fillStyle = '#57068C';
+                ctx.fillStyle = REFERENCE_PLOT_COLORS.response;
                 ctx.fill();
                 ctx.strokeStyle = 'white';
                 ctx.lineWidth = 2;
                 ctx.stroke();
             });
 
+            // References are drawn as diamonds as well as recoloured, so they stay
+            // distinguishable without relying on colour vision.
+            referencePoints.forEach(point => {
+                drawDiamond(ctx, point.x, point.y, 9);
+                ctx.fillStyle = REFERENCE_PLOT_COLORS.reference;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            if (referencePoints.length > 0) {
+                drawPlotLegend(ctx, width, padding, responsePoints.length, referencePoints.length);
+            }
+
             // Add interactivity
             addVisualizationInteractivity(canvas);
+        }
+
+        const REFERENCE_PLOT_COLORS = {
+            response: '#57068C',   // NYU purple
+            reference: '#00838F'   // teal - distinct from both the purple and the orange selection ring
+        };
+
+        function drawDiamond(ctx, cx, cy, radius) {
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - radius);
+            ctx.lineTo(cx + radius, cy);
+            ctx.lineTo(cx, cy + radius);
+            ctx.lineTo(cx - radius, cy);
+            ctx.closePath();
+        }
+
+        function drawPlotLegend(ctx, width, padding, responseCount, referenceCount) {
+            const entries = [
+                { label: `Responses (${responseCount})`, color: REFERENCE_PLOT_COLORS.response, shape: 'circle' },
+                { label: `Reference texts (${referenceCount})`, color: REFERENCE_PLOT_COLORS.reference, shape: 'diamond' }
+            ];
+            // Sit the legend in the unused strip above the plot area. Points are scaled into
+            // [padding, height - padding], so keeping the box entirely above `padding` means it
+            // can never hide a response - or a reference - underneath itself.
+            const boxWidth = 170;
+            const boxHeight = 14 + entries.length * 20;
+            const x = width - padding - boxWidth;
+            const y = Math.max(2, padding - boxHeight - 4);
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+            ctx.strokeStyle = '#e0e0e0';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.rect(x, y, boxWidth, boxHeight);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.textAlign = 'left';
+            ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+            entries.forEach((entry, i) => {
+                const cy = y + 18 + i * 20;
+                if (entry.shape === 'diamond') {
+                    drawDiamond(ctx, x + 16, cy, 6);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(x + 16, cy, 5, 0, 2 * Math.PI);
+                }
+                ctx.fillStyle = entry.color;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                ctx.fillStyle = '#444';
+                ctx.fillText(entry.label, x + 30, cy + 4);
+            });
+            ctx.textAlign = 'center';
         }
 
         // Add hover and click interactions to canvas
@@ -12159,12 +12102,8 @@
             const height = canvas.height;
             const padding = 60;
 
-            // Clear and redraw everything
-            const coordinates = window.visualizationPoints.map(p => ({ x: p.x, y: p.y }));
-            drawScatterPlot(canvas, ctx, coordinates.map((c, i) => ({
-                x: window.visualizationPoints[i].x,
-                y: window.visualizationPoints[i].y
-            })));
+            // Clear and redraw from the original MDS coordinates.
+            drawScatterPlot(canvas, ctx, window.visualizationCoordinates);
 
             // Highlight selected point
             if (selectedPoint) {
@@ -12182,13 +12121,33 @@
         function showVisualizationPointDetails(point) {
             const statsDiv = document.getElementById('visualizationStats');
             const preview = point.text.substring(0, 200) + (point.text.length > 200 ? '...' : '');
+            const accent = point.isReference ? REFERENCE_PLOT_COLORS.reference : '#57068C';
+
+            // For a response, surface how close it sits to the nearest reference text; for a
+            // reference, say so plainly so it is not mistaken for a student submission.
+            let referenceLine = '';
+            if (point.isReference) {
+                referenceLine = `
+                    <p style="margin: 10px 0 0 0; font-size: 12px; color: ${accent}; font-weight: 600;">
+                        This is a flagged reference text, not a response.
+                    </p>`;
+            } else {
+                const nearest = buildNearestReferenceReport().find(entry => entry.id === point.id);
+                if (nearest) {
+                    referenceLine = `
+                        <p style="margin: 10px 0 0 0; font-size: 12px; color: #555;">
+                            Nearest reference: <strong>${escapeHtml(String(nearest.referenceId))}</strong>
+                            at ${(nearest.similarity * 100).toFixed(1)}% on the selected metrics.
+                        </p>`;
+                }
+            }
 
             statsDiv.innerHTML = `
-                <div style="background: #f0f7ff; padding: 15px; border-radius: 5px; border-left: 4px solid #57068C;">
-                    <h4 style="margin: 0 0 10px 0; color: #57068C;">Selected: Response ${point.id}</h4>
+                <div style="background: #f0f7ff; padding: 15px; border-radius: 5px; border-left: 4px solid ${accent};">
+                    <h4 style="margin: 0 0 10px 0; color: ${accent};">Selected: ${point.isReference ? 'Reference' : 'Response'} ${point.id}</h4>
                     <p style="margin: 0; font-size: 13px; color: #666; line-height: 1.6;">
                         ${escapeHtml(preview)}
-                    </p>
+                    </p>${referenceLine}
                     <p style="margin: 10px 0 0 0; font-size: 12px; color: #888;">
                         <em>Click another point to compare, or check the "Similar Pairs" tab to see this response's matches.</em>
                     </p>
@@ -12202,6 +12161,7 @@
 
             // Calculate some basic stats
             const numPoints = coordinates.length;
+            const referenceCount = getReferences().length;
             const avgSimilarity = allSimilarityPairs.reduce((sum, p) => sum + p.similarity, 0) / allSimilarityPairs.length;
 
             statsDiv.innerHTML = `
@@ -12217,6 +12177,11 @@
                     <div style="font-size: 13px; color: #666; margin-bottom: 5px;">Comparisons Made</div>
                     <div style="font-size: 28px; font-weight: bold; color: #57068C;">${allSimilarityPairs.length.toLocaleString()}</div>
                 </div>
+                ${referenceCount > 0 ? `
+                <div style="background: #e0f2f1; padding: 15px; border-radius: 5px; text-align: center;">
+                    <div style="font-size: 13px; color: #666; margin-bottom: 5px;">Reference Texts</div>
+                    <div style="font-size: 28px; font-weight: bold; color: ${REFERENCE_PLOT_COLORS.reference};">${referenceCount}</div>
+                </div>` : ''}
             `;
         }
 
