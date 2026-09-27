@@ -1582,6 +1582,21 @@
                                 <span id="weightDisplay_functionWordDist" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.0</span>
                             </div>
                         </div>
+
+                        <!-- Shared Rare Phrases -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
+                            <input type="checkbox" id="metric_rareNgram" checked onchange="toggleMetricWeight('rareNgram')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Shared Rare Phrases (IDF-weighted)</strong>
+                                <div style="font-size: 12px; color: #666;">Overlap in 3- to 5-word phrases, weighted by how rare each phrase is in this cohort</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_rareNgram" min="0.1" max="5.0" step="0.1" value="3.5"
+                                       style="flex: 1;" oninput="updateWeightDisplay('rareNgram', this.value)">
+                                <span id="weightDisplay_rareNgram" style="min-width: 35px; font-weight: 600; font-size: 13px;">3.5</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
@@ -2491,7 +2506,7 @@
             // the cache is thrashing anyway. Clearing beats tracking recency here.
             if (posTagCache.size >= POS_CACHE_LIMIT) posTagCache.clear();
 
-            entry = { penn: null, simple: null, functionWords: null, ngrams: new Map() };
+            entry = { penn: null, simple: null, functionWords: null, rareNgrams: null, ngrams: new Map() };
             posTagCache.set(text, entry);
             return entry;
         }
@@ -2808,7 +2823,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 6; // Increment this when adding new metrics (v6 = fuzzy metrics bounded in [0,1]; they could previously exceed 1)
+        const METRIC_VERSION = 7; // Increment this when adding new metrics (v7 = shared rare n-grams, IDF-weighted)
 
         // ========== HEADER MENU ==========
 
@@ -3788,6 +3803,11 @@
                     case 'functionWordDist':
                         metrics.functionWordDist = functionWordDistributionSimilarity(text1, text2);
                         break;
+                    case 'rareNgram':
+                        // Needs the cohort index; returns 0 until Phase 0c has built it, and the
+                        // analysis fills the real value in afterwards.
+                        metrics.rareNgram = sharedRareNgramSimilarity(text1, text2);
+                        break;
                     case 'burrowsDeltaTopicAgnostic':
                         metrics.burrowsDeltaTopicAgnostic = calculateTopicAgnosticBurrowsDelta(text1, text2);
                         break;
@@ -3912,7 +3932,7 @@
             const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
                               'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
                               'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
-                              'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist'];
+                              'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram'];
             return metricIds.filter(id => {
                 const checkbox = document.getElementById('metric_' + id);
                 return checkbox && checkbox.checked;
@@ -4020,7 +4040,7 @@
             const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount', 'avgSentenceLength',
                               'temporalBurstiness', 'pronounDensity', 'transitionWords', 'ngramPunctuation', 'wordNgram',
                               'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5',
-                              'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist'];
+                              'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram'];
 
             metricIds.forEach(id => {
                 const slider = document.getElementById(`weight_${id}`);
@@ -4059,7 +4079,7 @@
                 const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
                                   'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
                                   'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
-                                  'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist'];
+                                  'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram'];
                 metricIds.forEach(id => {
                     const checkbox = document.getElementById('metric_' + id);
                     if (checkbox) {
@@ -4208,6 +4228,9 @@
                     case 'functionWordDist':
                         metricValues['Function Word Dist'] = functionWordDistributionSimilarity(text1, text2);
                         break;
+                    case 'rareNgram':
+                        metricValues['Shared Rare Phrases'] = sharedRareNgramSimilarity(text1, text2);
+                        break;
                 }
             }
 
@@ -4249,7 +4272,8 @@
                 'shaib6lev2': 'Shaib 6-gram (Lev 2)',
                 'shaib6lev3': 'Shaib 6-gram (Lev 3)',
                 'simplePOS': 'Simple Syntactic Pattern',
-                'functionWordDist': 'Function Word Dist'
+                'functionWordDist': 'Function Word Dist',
+                'rareNgram': 'Shared Rare Phrases'
             };
 
             const metricTooltips = {
@@ -4440,6 +4464,9 @@
                     break;
                 case 'Function Word Dist':
                     detailsHTML = generateFunctionWordDetails(text1, text2, id1, id2);
+                    break;
+                case 'Shared Rare Phrases':
+                    detailsHTML = generateRareNgramDetails(text1, text2, id1, id2);
                     break;
                 case 'Type-Token Ratio (TTR)':
                     detailsHTML = generateTTRDetails(text1, text2, id1, id2);
@@ -8572,6 +8599,191 @@
         // BLEU Score (word-level) - adapted for similarity analysis
         // BLEU: moved into sharedMetricFunctions() so the metrics worker has it too.
 
+        function generateRareNgramDetails(text1, text2, id1, id2) {
+            if (!rareNgramIndex) {
+                return `
+                    <div style="background: #fff3cd; padding: 15px; border-radius: 5px;">
+                        <p style="margin: 0; font-size: 14px;">
+                            This metric needs the cohort's phrase index, which is built when an analysis runs.
+                            Run the analysis with <strong>Shared Rare Phrases</strong> enabled to see the detail here.
+                        </p>
+                    </div>`;
+            }
+
+            const similarity = sharedRareNgramSimilarity(text1, text2);
+            const detail = sharedRareNgramDetails(text1, text2, 25);
+            const N = rareNgramIndex.total;
+
+            const rows = detail.shared.map((entry, i) => `
+                <tr style="background: ${i % 2 === 0 ? '#f8f9fa' : 'white'};">
+                    <td style="padding: 8px; font-family: monospace; font-size: 12px;">${escapeHtml(entry.ngram)}</td>
+                    <td style="padding: 8px; text-align: center;">${entry.df} of ${N}</td>
+                    <td style="padding: 8px; text-align: right; font-variant-numeric: tabular-nums;">${entry.weight.toFixed(2)}</td>
+                </tr>`).join('');
+
+            return `
+                <div style="background: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                    <h3 style="margin: 0 0 10px 0;">Shared Rare Phrases</h3>
+                    <p>
+                        Overlap in 3- to 5-word phrases, with each shared phrase weighted by how rare it is
+                        across this cohort. A phrase half the responses use carries almost no weight; a phrase
+                        appearing in only these two carries a lot.
+                    </p>
+                    <div style="font-family: monospace; background: white; padding: 12px; border-radius: 3px; margin: 10px 0; font-size: 13px; line-height: 1.8;">
+                        weight(phrase) = log(${N} / responses containing it)<br>
+                        score = total weight of shared phrases / total weight of all phrases in either text
+                    </div>
+                    <p style="font-size: 12px; color: #666; margin: 10px 0 0 0;">
+                        A phrase every response uses has weight exactly zero, so common phrasing cannot inflate
+                        this score - it simply stops counting. Weights are relative to this cohort, so the same
+                        pair of texts scores differently among different classmates.
+                    </p>
+                </div>
+
+                <div style="background: #d5f4e6; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 10px 0;">Score</h4>
+                    <p style="font-size: 32px; font-weight: bold; margin: 0;">${(similarity * 100).toFixed(1)}%</p>
+                    <p style="font-size: 12px; color: #666; margin: 5px 0 0 0;">
+                        ${detail.totalShared.toLocaleString()} shared phrase${detail.totalShared === 1 ? '' : 's'},
+                        carrying ${detail.sharedWeight.toFixed(1)} of ${detail.unionWeight.toFixed(1)} total weight
+                    </p>
+                </div>
+
+                ${detail.shared.length > 0 ? `
+                <h4>Rarest shared phrases (${detail.shared.length} of ${detail.totalShared.toLocaleString()})</h4>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                    <thead>
+                        <tr style="background: #57068C; color: white;">
+                            <th style="padding: 10px; text-align: left;">Phrase</th>
+                            <th style="padding: 10px; text-align: center;">Appears in</th>
+                            <th style="padding: 10px; text-align: right;">Weight</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>` : `
+                <div style="background: #fff3cd; padding: 15px; border-radius: 5px;">
+                    <p style="margin: 0; font-size: 14px;">These two responses share no 3- to 5-word phrase.</p>
+                </div>`}
+            `;
+        }
+
+        // ============================================================================
+        // SHARED RARE N-GRAMS
+        // ============================================================================
+        //
+        // Every other lexical metric here treats a shared phrase as a shared phrase. But
+        // "in today's society", which half a cohort writes unprompted, says nothing, while an
+        // oddly specific phrase appearing in exactly two responses says a great deal. This
+        // metric weights each shared n-gram by how rare it is in this cohort, so the second
+        // kind of overlap counts and the first nearly cancels.
+        //
+        // Weight is inverse document frequency, log(N / df), where df is the number of
+        // responses containing the n-gram. An n-gram every response uses has df = N and weight
+        // exactly zero, so no arbitrary cutoff is needed to exclude it - it simply stops
+        // counting. An n-gram in two responses out of a hundred carries weight log(50).
+
+        let rareNgramIndex = null; // { documentFrequency: Map, total: number, sizes: number[] }
+
+        const RARE_NGRAM_SIZES = [3, 4, 5];
+
+        // Contiguous word n-grams for one text. Deliberately not stop-word filtered: "as I
+        // mentioned above" is exactly the kind of shared phrasing worth catching, and dropping
+        // function words would splice together words that were never adjacent.
+        function rareNgramsForText(text, sizes = RARE_NGRAM_SIZES) {
+            const entry = posCacheEntry(text);
+            if (entry.rareNgrams) return entry.rareNgrams;
+
+            const words = String(text).toLowerCase().replace(/[^\w\s']/g, ' ').split(/\s+/).filter(w => w.length > 0);
+            const set = new Set();
+            sizes.forEach(n => {
+                for (let i = 0; i <= words.length - n; i++) {
+                    set.add(words.slice(i, i + n).join(' '));
+                }
+            });
+
+            entry.rareNgrams = set;
+            return set;
+        }
+
+        // Document frequency across the cohort, built once per analysis.
+        function buildRareNgramIndex(texts) {
+            const documentFrequency = new Map();
+            texts.forEach(text => {
+                // A Set per text, so a phrase repeated within one response still counts once:
+                // this is document frequency, not term frequency.
+                rareNgramsForText(text).forEach(ngram => {
+                    documentFrequency.set(ngram, (documentFrequency.get(ngram) || 0) + 1);
+                });
+            });
+            return { documentFrequency, total: texts.length, sizes: RARE_NGRAM_SIZES.slice() };
+        }
+
+        function rareNgramWeight(ngram) {
+            if (!rareNgramIndex) return 0;
+            const df = rareNgramIndex.documentFrequency.get(ngram) || rareNgramIndex.total;
+            return Math.log(rareNgramIndex.total / df);
+        }
+
+        // Inverse-document-frequency-weighted Jaccard over shared n-grams:
+        //
+        //     sum of weights over A intersect B  /  sum of weights over A union B
+        //
+        // A plain sum over the shared rare n-grams would express the raw amount of unusual
+        // shared material, which is the more direct collusion signal, but it is unbounded and
+        // grows with response length. Every metric here has to lie in [0,1] for the combined
+        // raw similarity to mean anything, so this is expressed as a ratio and the question of
+        // whether a pair's overlap is unusual for the cohort is left to the double-centring
+        // and standardisation that follow. Bounded, symmetric, 1 for identical n-gram sets.
+        function sharedRareNgramSimilarity(text1, text2) {
+            if (!rareNgramIndex) return 0;
+
+            const a = rareNgramsForText(text1);
+            const b = rareNgramsForText(text2);
+            if (a.size === 0 || b.size === 0) return 0;
+
+            // Iterate the smaller set; membership in the larger is a hash lookup either way.
+            const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+
+            let sharedWeight = 0, unionWeight = 0;
+            small.forEach(ngram => {
+                const w = rareNgramWeight(ngram);
+                unionWeight += w;
+                if (large.has(ngram)) sharedWeight += w;
+            });
+            large.forEach(ngram => {
+                if (!small.has(ngram)) unionWeight += rareNgramWeight(ngram);
+            });
+
+            // Zero only when every n-gram in both texts appears in every response, in which
+            // case the pair genuinely shares nothing distinctive.
+            if (unionWeight === 0) return 0;
+            return sharedWeight / unionWeight;
+        }
+
+        // The shared n-grams of a pair, rarest first - for the detail panel.
+        function sharedRareNgramDetails(text1, text2, limit = 25) {
+            if (!rareNgramIndex) return { shared: [], sharedWeight: 0, unionWeight: 0 };
+
+            const a = rareNgramsForText(text1);
+            const b = rareNgramsForText(text2);
+            const shared = [];
+            let sharedWeight = 0, unionWeight = 0;
+
+            const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+            small.forEach(ngram => {
+                const w = rareNgramWeight(ngram);
+                unionWeight += w;
+                if (large.has(ngram)) {
+                    sharedWeight += w;
+                    shared.push({ ngram, df: rareNgramIndex.documentFrequency.get(ngram) || 0, weight: w });
+                }
+            });
+            large.forEach(ngram => { if (!small.has(ngram)) unionWeight += rareNgramWeight(ngram); });
+
+            shared.sort((x, y) => y.weight - x.weight || x.ngram.localeCompare(y.ngram));
+            return { shared: shared.slice(0, limit), totalShared: shared.length, sharedWeight, unionWeight };
+        }
+
         // ============================================================================
         // BURROW'S DELTA FUNCTIONS
         // ============================================================================
@@ -10642,6 +10854,23 @@
                 await sleep(500);
             }
 
+            // PHASE 0c: Build the cohort's n-gram document frequencies (if selected)
+            if (selectedMetrics.includes('rareNgram')) {
+                updateProgress(0, totalPairs, 'Phase 0c: Indexing n-grams across the cohort...', 'Measuring how common each phrase is...');
+                await sleep(10);
+
+                rareNgramIndex = buildRareNgramIndex(responses.map(r => r.text));
+
+                const distinct = rareNgramIndex.documentFrequency.size;
+                let sharedByTwoPlus = 0;
+                rareNgramIndex.documentFrequency.forEach(df => { if (df >= 2) sharedByTwoPlus++; });
+                updateProgress(0, totalPairs, 'Phase 0c: N-gram index complete',
+                    `${distinct.toLocaleString()} distinct phrases, ${sharedByTwoPlus.toLocaleString()} appearing in more than one response`);
+                await sleep(300);
+            } else {
+                rareNgramIndex = null;
+            }
+
             // PHASE 1: Calculate all individual metrics using Web Workers (parallel)
             updateProgress(0, totalPairs, 'Phase 1: Calculating individual metrics (parallel)...', 'Initializing workers...');
             await sleep(10);
@@ -11288,6 +11517,40 @@
                         updateProgress(i + 1, pairMetrics.length,
                             `Analyzing function word patterns... (${i + 1}/${pairMetrics.length})`,
                             'Detecting stylistic convergence...');
+                        await sleep(0);
+                    }
+                }
+            }
+
+            // PHASE 1.9: Shared rare n-grams (if selected)
+            // Main thread rather than a worker: this metric needs the whole cohort's document
+            // frequencies, and shipping that index to every worker would cost more than the
+            // scoring does. Per pair it is two hash lookups per n-gram.
+            if (selectedMetrics.includes('rareNgram') && rareNgramIndex) {
+                updateProgress(0, pairMetrics.length, 'Calculating shared rare phrases...', 'Weighting overlap by how unusual each phrase is...');
+                await sleep(0);
+
+                for (let i = 0; i < pairMetrics.length; i++) {
+                    if (cancelRequested) {
+                        hideProgress();
+                        analysisIsRunning = false;
+                        cancelRequested = false;
+                        alert('Analysis cancelled by user.');
+                        return;
+                    }
+
+                    const pair = pairMetrics[i];
+                    try {
+                        pair.metrics.rareNgram = sharedRareNgramSimilarity(pair.text1, pair.text2);
+                    } catch (error) {
+                        console.error('Error calculating shared rare n-grams for pair:', error);
+                        pair.metrics.rareNgram = 0;
+                    }
+
+                    if (i % 50 === 0 || i === pairMetrics.length - 1) {
+                        updateProgress(i + 1, pairMetrics.length,
+                            `Calculating shared rare phrases... (${i + 1}/${pairMetrics.length})`,
+                            'Weighting overlap by how unusual each phrase is...');
                         await sleep(0);
                     }
                 }
