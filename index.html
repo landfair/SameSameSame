@@ -1017,7 +1017,21 @@
                         weights here rather than thirty-seven below.
                     </p>
 
-                    <div id="familyWeightPanel" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px;"></div>
+                    <div id="familyWeightPanel" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px;"></div>
+
+                    <div style="margin-bottom: 18px; padding: 12px; background: #f6f0fa; border: 1px solid #d5c9e0; border-radius: 5px;">
+                        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                            <button onclick="fitFamilyWeightsFromReferences()"
+                                style="padding: 8px 18px; background: #57068C; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 13px;">
+                                Fit weights from references
+                            </button>
+                            <span style="font-size: 12px; color: #666;">
+                                Needs at least three flagged reference texts. Finds the weighting that best separates
+                                reference pairs from class pairs for this assignment.
+                            </span>
+                        </div>
+                        <div id="fitWeightsNote" style="font-size: 12px; color: #666; margin-top: 8px;"></div>
+                    </div>
 
                     <div style="margin-bottom: 18px; padding: 12px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px; font-size: 12px; color: #555;">
                         <strong style="color: #1565c0;">Why families.</strong>
@@ -3510,6 +3524,48 @@
                 </div>`;
         }
 
+        // Which column holds the responses?
+        //
+        // This used to default to column 1 on the assumption that column 0 is an id and the next
+        // column is the text. In a real export that is frequently wrong: a form response sheet
+        // may put a decision, a timestamp or a grade there, and the essays several columns over.
+        // Analysing a one-word decision column produces a page of scores that all look plausible
+        // and mean nothing, with nothing to indicate the wrong column was read.
+        //
+        // The responses are whichever column carries by far the most prose, judged by median
+        // length so a single long cell cannot sway it.
+        function guessResponseColumn(headerRow, rows) {
+            if (!rows.length || headerRow.length < 2) return 1;
+
+            const sample = rows.slice(0, 200);
+            const medianLength = (columnIndex) => {
+                const lengths = sample
+                    .map(r => String(r[columnIndex] ?? '').trim().length)
+                    .sort((a, b) => a - b);
+                if (!lengths.length) return 0;
+                return lengths[lengths.length >> 1];
+            };
+
+            let best = -1, bestMedian = -1;
+            for (let i = 1; i < headerRow.length; i++) {
+                if (i === referenceColumn) continue; // that column is a flag, not prose
+                const m = medianLength(i);
+                if (m > bestMedian) { bestMedian = m; best = i; }
+            }
+
+            if (best === -1) return 1;
+
+            // A column of one-word answers is not prose. Fall back to the old behaviour rather
+            // than silently picking something arbitrary, but say so.
+            if (bestMedian < 25) {
+                console.warn(`[COLUMN] no column looks like prose (longest median is ${bestMedian} characters); defaulting to column 1`);
+                return 1;
+            }
+
+            console.log(`[COLUMN] selected "${headerRow[best]}" (median ${bestMedian} characters per response)`);
+            return best;
+        }
+
         function handleFileUpload(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -3546,9 +3602,10 @@
                 }
             });
 
-            currentColumn = 1;
             referenceColumn = detectReferenceColumn(headers);
             populateReferenceColumnSelect();
+            currentColumn = guessResponseColumn(headers, csvData);
+            if (select) select.value = String(currentColumn);
             if (referenceColumn >= 0) {
                 console.log(`Reference column detected: "${headers[referenceColumn]}" (${countFlaggedRows()} rows flagged)`);
             }
@@ -8866,6 +8923,126 @@
 
         let familyWeights = Object.fromEntries(METRIC_FAMILIES.map(f => [f.id, f.defaultWeight]));
 
+        // Recompute every pair's score from the family scores already stored on it. Because the
+        // per-family values do not depend on the family weights, changing a weight needs no
+        // re-analysis at all - the expensive work is already done.
+        function rescoreFromFamilyWeights() {
+            if (!allSimilarityPairs.length || !allSimilarityPairs[0].familyZ) return false;
+
+            const weights = getFamilyWeights();
+            const combined = allSimilarityPairs.map(pair => {
+                let z = 0, w = 0;
+                Object.entries(pair.familyZ || {}).forEach(([family, value]) => {
+                    const fw = weights[family] ?? 0;
+                    if (fw <= 0 || !isFinite(value)) return;
+                    z += value * fw;
+                    w += fw;
+                });
+                return w > 0 ? z / w : 0;
+            });
+
+            const scale = robustScale(combined);
+            allSimilarityPairs.forEach((pair, i) => {
+                pair.adjustedScore = scale.scale ? (combined[i] - scale.center) / scale.scale : 0;
+            });
+            allSimilarityPairs.sort((a, b) => b.adjustedScore - a.adjustedScore);
+            updateThreshold(document.getElementById('similarityThreshold').value);
+            return true;
+        }
+
+        // Learn the family weights from the reference texts instead of setting them by hand.
+        //
+        // Reference-to-reference pairs are examples of "these two came from the same kind of
+        // source"; ordinary class pairs are examples of the opposite. A logistic regression over
+        // the family scores finds the weighting that best tells those two groups apart for this
+        // particular assignment, which is what "let the data set the weights" means in practice:
+        // whichever families happen to be informative for this prompt get the weight.
+        //
+        // Negative coefficients are clamped to zero rather than kept. A family that actively
+        // argues against a reference match is not evidence to invert, it is evidence to ignore,
+        // and a negative weight would make the composite score hard to read.
+        function fitFamilyWeightsFromReferences() {
+            const note = document.getElementById('fitWeightsNote');
+            const say = (msg, colour) => { if (note) { note.textContent = msg; note.style.color = colour || '#666'; } };
+
+            if (!allSimilarityPairs.length || !allSimilarityPairs[0].familyZ) {
+                say('Run an analysis first - the fit needs the per-family scores it produces.', '#c0392b');
+                return;
+            }
+
+            const referenceIds = new Set(responses.filter(r => r.isReference).map(r => String(r.id)));
+            if (referenceIds.size < 3) {
+                say(`Fitting needs at least three reference texts; ${referenceIds.size} ${referenceIds.size === 1 ? 'is' : 'are'} flagged. Mark more rows in the reference column.`, '#c0392b');
+                return;
+            }
+
+            const families = METRIC_FAMILIES.map(f => f.id)
+                .filter(f => allSimilarityPairs.some(p => isFinite(p.familyZ?.[f])));
+            if (!families.length) { say('No family produced a score to fit on.', '#c0392b'); return; }
+
+            const rowsFor = (pair) => families.map(f => isFinite(pair.familyZ?.[f]) ? pair.familyZ[f] : 0);
+            const positives = [], negatives = [];
+            allSimilarityPairs.forEach(p => {
+                const a = referenceIds.has(String(p.id1)), b = referenceIds.has(String(p.id2));
+                if (a && b) positives.push(rowsFor(p));
+                else if (!a && !b) negatives.push(rowsFor(p));
+                // Reference-to-student pairs are exactly the thing being judged, so they are
+                // neither a positive nor a negative example and sit out of the fit.
+            });
+
+            if (positives.length < 3) {
+                say(`Only ${positives.length} reference-to-reference pair${positives.length === 1 ? '' : 's'} available; at least three are needed.`, '#c0392b');
+                return;
+            }
+            if (!negatives.length) { say('No class pairs to contrast the references against.', '#c0392b'); return; }
+
+            // Class-balanced, so a handful of references are not swamped by thousands of pairs.
+            const d = families.length;
+            const beta = new Float64Array(d);
+            let intercept = 0;
+            const wPos = 0.5 / positives.length, wNeg = 0.5 / negatives.length;
+            const lambda = 0.01, lr = 0.5, iterations = 2000;
+
+            for (let iter = 0; iter < iterations; iter++) {
+                const grad = new Float64Array(d);
+                let grad0 = 0;
+                const step = (rows, label, weight) => {
+                    for (const row of rows) {
+                        let z = intercept;
+                        for (let k = 0; k < d; k++) z += beta[k] * row[k];
+                        const err = (1 / (1 + Math.exp(-z)) - label) * weight;
+                        grad0 += err;
+                        for (let k = 0; k < d; k++) grad[k] += err * row[k];
+                    }
+                };
+                step(positives, 1, wPos);
+                step(negatives, 0, wNeg);
+                intercept -= lr * grad0;
+                for (let k = 0; k < d; k++) beta[k] -= lr * (grad[k] + lambda * beta[k]);
+            }
+
+            const positive = Array.from(beta, v => Math.max(0, v));
+            const peak = Math.max(...positive);
+            const dropped = [];
+            METRIC_FAMILIES.forEach(f => {
+                const k = families.indexOf(f.id);
+                if (k === -1) return;
+                const w = peak > 0 ? Math.round((2 * positive[k] / peak) * 10) / 10 : 1;
+                familyWeights[f.id] = w;
+                if (w === 0) dropped.push(f.label);
+            });
+
+            renderFamilyWeightPanel();
+            const rescored = rescoreFromFamilyWeights();
+            saveSession();
+
+            say(`Fitted from ${positives.length} reference pair${positives.length === 1 ? '' : 's'} against ${negatives.length.toLocaleString()} class pairs. ` +
+                (dropped.length ? `${dropped.join(' and ')} got weight 0 - ${dropped.length === 1 ? 'it did' : 'they did'} not help separate the references from the class. ` : '') +
+                (rescored ? 'Scores updated. ' : '') +
+                'This assumes most of the class did not use a chatbot; if many did, the fit will be conservative.',
+                '#1e5631');
+        }
+
         function renderFamilyWeightPanel() {
             const panel = document.getElementById('familyWeightPanel');
             if (!panel) return;
@@ -8906,10 +9083,17 @@
             });
         }
 
+        let familyRescoreTimer = null;
+
         function updateFamilyWeightDisplay(familyId, value) {
             const display = document.getElementById('familyWeightDisplay_' + familyId);
             if (display) display.textContent = Number(value).toFixed(1);
             familyWeights[familyId] = parseFloat(value);
+
+            // Re-scoring reads the per-family values already on each pair, so it is cheap enough
+            // to do while the slider moves. Debounced so a drag does not re-render every frame.
+            clearTimeout(familyRescoreTimer);
+            familyRescoreTimer = setTimeout(() => { rescoreFromFamilyWeights(); }, 150);
         }
 
         function getFamilyWeights() {
