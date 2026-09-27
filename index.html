@@ -12066,9 +12066,36 @@
                 will look like this when that piece is missing.`;
         }
 
+        // Click handling for the pair list.
+        //
+        // Each row used to carry its whole pair - both full response texts - serialised as JSON
+        // inside an onclick attribute, with apostrophes escaped as \' . That is a JavaScript
+        // escape in an HTML attribute, and HTML attribute parsing has no notion of backslash
+        // escapes: the apostrophe still closed the attribute. Any response containing "it's" or
+        // "don't" truncated the handler mid-string, so the row's onclick was invalid JavaScript
+        // and clicking it did nothing. The remainder of the essay was parsed as attributes - one
+        // six-response test cohort produced 47 stray attributes named after words in the text.
+        //
+        // Rows now carry an index and the array stays in JavaScript, so no response text is
+        // serialised into markup at all. That also keeps the DOM small: at 100 responses the old
+        // approach embedded every flagged pair's full text twice over.
+        let renderedPairs = [];
+
+        function handlePairListClick(event) {
+            const row = event.target.closest('.similarity-pair-item');
+            if (!row) return;
+            const pair = renderedPairs[Number(row.dataset.pairIndex)];
+            if (pair) showPairComparison(pair);
+        }
+
         function renderSimilarityPairs(pairs) {
             renderInertMetricNotice();
             const container = document.getElementById('similarityPairsList');
+            renderedPairs = pairs;
+            if (!container.dataset.clickBound) {
+                container.addEventListener('click', handlePairListClick);
+                container.dataset.clickBound = 'true';
+            }
 
             if (pairs.length === 0) {
                 container.innerHTML = `
@@ -12081,7 +12108,7 @@
                 return;
             }
 
-            container.innerHTML = pairs.map(pair => {
+            container.innerHTML = pairs.map((pair, index) => {
                 // Colour by the cohort-relative score, which is what the ranking means; the raw
                 // percentage is shown alongside because it is what a reader wants to see next.
                 const adjusted = pair.adjustedScore ?? 0;
@@ -12091,7 +12118,7 @@
                 const preview = pair.text1.substring(0, 200) + (pair.text1.length > 200 ? '...' : '');
 
                 return `
-                    <div class="similarity-pair-item" onclick='showPairComparison(${JSON.stringify(pair).replace(/'/g, "\\'")} )'>
+                    <div class="similarity-pair-item" data-pair-index="${index}">
                         <div class="pair-header-row">
                             <span class="pair-ids">Respondent ${pair.id1} ↔ Respondent ${pair.id2}</span>
                             <span class="similarity-badge ${scoreClass}" title="Cohort-relative score: how far above the cohort baseline this pair sits">${adjusted >= 0 ? '+' : ''}${adjusted.toFixed(1)} SD</span>
@@ -12152,10 +12179,12 @@
                 respondent.matches.sort((a, b) => b.similarity - a.similarity);
 
                 // Escape single quotes in ID for onclick handler
-                const escapedId = String(respondent.id).replace(/'/g, "\\'");
-
+                // Same reasoning as the pair rows: an id carrying an apostrophe would close the
+                // attribute. escapeHtml turns it into an entity the parser understands.
                 return `
-                    <div class="flagged-respondent-item" onclick="showFlaggedRespondentMatches('${escapedId}')">
+                    <div class="flagged-respondent-item"
+                         onclick="showFlaggedRespondentMatches(this.dataset.respondentId)"
+                         data-respondent-id="${escapeHtml(String(respondent.id))}">
                         <div class="flagged-header">
                             <strong style="color: #2c3e50; font-size: 15px;">Respondent ${respondent.id}</strong>
                             <span class="flag-count-badge">${respondent.count} matches</span>
@@ -12222,11 +12251,12 @@
                 // Sort pairs by similarity (lowest first for this view)
                 respondent.pairs.sort((a, b) => a.similarity - b.similarity);
 
-                const escapedId = String(respondent.id).replace(/'/g, "\\'");
                 const avgPercent = (respondent.avgSimilarity * 100).toFixed(1);
 
                 return `
-                    <div class="flagged-respondent-item" onclick="showFlaggedRespondentMatches('${escapedId}', true)">
+                    <div class="flagged-respondent-item"
+                         onclick="showFlaggedRespondentMatches(this.dataset.respondentId, true)"
+                         data-respondent-id="${escapeHtml(String(respondent.id))}">
                         <div class="flagged-header">
                             <strong style="color: #2c3e50; font-size: 15px;">Respondent ${respondent.id}</strong>
                             <span class="flag-count-badge" style="background: #27ae60;">Avg: ${avgPercent}%</span>
@@ -14529,7 +14559,8 @@
                                             const suspicionScore = corr.lift * Math.log(corr.support + 1);
                                             return `
                                                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid ${liftColor}; cursor: pointer; transition: background 0.2s;"
-                                                    onclick="document.getElementById('specificTermsInput').value = '${searchTerms.join(', ')}, ${escapeHtml(corr.term).replace(/'/g, "\\'")}'; searchSpecificTerms();"
+                                                    onclick="document.getElementById('specificTermsInput').value = this.dataset.termQuery; searchSpecificTerms();"
+                                                    data-term-query="${escapeHtml(searchTerms.join(', ') + ', ' + corr.term)}"
                                                     onmouseover="this.style.background='#ecf0f1'"
                                                     onmouseout="this.style.background='#f8f9fa'">
                                                     <div style="flex: 1;">
