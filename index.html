@@ -2634,22 +2634,9 @@
                 const ngrams1Array = [...ngrams1];
                 const ngrams2Array = [...ngrams2];
 
-                // Count matching (n-gram from 1, n-gram from 2) combinations. Every combination
-                // is distinct, so a counter is exactly the size of the Set of "i-j" keys this
-                // used to build - without allocating a string per match.
-                let matchCount = 0;
-                for (let i = 0; i < ngrams1Array.length; i++) {
-                    const ng1 = ngrams1Array[i];
-                    for (let j = 0; j < ngrams2Array.length; j++) {
-                        if (levenshteinWithin(ng1, ngrams2Array[j], maxDistance)) matchCount++;
-                    }
-                }
-
-                // NOTE: this counts combinations, not distinct n-grams, so the result is not
-                // bounded by 1 despite the name. Preserved as-is here deliberately - this change
-                // is a speed-up and must not move any score. See the scoring follow-up.
-                const totalNgrams = Math.max(ngrams1Array.length, ngrams2Array.length);
-                return totalNgrams === 0 ? 0 : matchCount / totalNgrams;
+                // Proportion of syntactic templates across both texts that have a fuzzy match.
+                return fuzzyOverlapScore(ngrams1Array, ngrams2Array,
+                    (a, b) => levenshteinWithin(a, b, maxDistance));
             } catch (error) {
                 console.error('Error calculating fuzzy POS similarity (Shaib method):', error);
                 return 0;
@@ -2821,7 +2808,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 5; // Increment this when adding new metrics (v5 = double-centred z-scores replace min-max normalization)
+        const METRIC_VERSION = 6; // Increment this when adding new metrics (v6 = fuzzy metrics bounded in [0,1]; they could previously exceed 1)
 
         // ========== HEADER MENU ==========
 
@@ -5094,7 +5081,12 @@
                         ${(similarity * 100).toFixed(1)}%
                     </p>
                     <p style="font-size: 13px; color: #666; margin: 10px 0 0 0;">
-                        Calculated as: (total matches) / max(phrases in text 1, phrases in text 2)
+                        Calculated as: (phrases in text 1 with a match + phrases in text 2 with a match)
+                        / (phrases in text 1 + phrases in text 2). Each phrase counts once however many
+                        partners it matches, so the score stays between 0% and 100%.
+                        <br><br>
+                        The match list below counts pairings, so it can be longer than the number of
+                        phrases involved - one phrase matching several others appears several times.
                     </p>
                 </div>
 
@@ -5234,7 +5226,12 @@
                         ${(similarity * 100).toFixed(1)}%
                     </p>
                     <p style="font-size: 13px; color: #666; margin: 10px 0 0 0;">
-                        Calculated as: (total matches) / max(phrases in text 1, phrases in text 2)
+                        Calculated as: (phrases in text 1 with a match + phrases in text 2 with a match)
+                        / (phrases in text 1 + phrases in text 2). Each phrase counts once however many
+                        partners it matches, so the score stays between 0% and 100%.
+                        <br><br>
+                        The match list below counts pairings, so it can be longer than the number of
+                        phrases involved - one phrase matching several others appears several times.
                     </p>
                 </div>
 
@@ -5379,6 +5376,11 @@
                     <p style="font-size: 24px; margin: 0; font-weight: bold; color: #2e7d32;">
                         ${(similarity * 100).toFixed(1)}%
                     </p>
+                    <p style="font-size: 13px; color: #666; margin: 10px 0 0 0;">
+                        The share of phrases, across both texts, that have at least one match within
+                        the distance threshold. Each phrase counts once however many partners it
+                        matches, so the score stays between 0% and 100%.
+                    </p>
                 </div>
 
                 ${exactMatches.length > 0 ? `
@@ -5520,6 +5522,11 @@
                     <h4 style="margin: 0 0 10px 0;">Overall Similarity</h4>
                     <p style="font-size: 24px; margin: 0; font-weight: bold; color: #2e7d32;">
                         ${(similarity * 100).toFixed(1)}%
+                    </p>
+                    <p style="font-size: 13px; color: #666; margin: 10px 0 0 0;">
+                        The share of phrases, across both texts, that have at least one match within
+                        the distance threshold. Each phrase counts once however many partners it
+                        matches, so the score stays between 0% and 100%.
                     </p>
                 </div>
 
@@ -7692,11 +7699,16 @@
                             <li>Tag each word with Penn Treebank POS tags (VBZ, NN, DT, etc.)</li>
                             <li>Extract ${n}-word POS sequences</li>
                             <li>Compare POS ${n}-grams using Levenshtein distance (allows up to ${maxDistance} character edits)</li>
-                            <li>Count matches where distance ≤ ${maxDistance}</li>
-                            <li>Calculate similarity: matched pairs / total unique ${n}-grams</li>
+                            <li>Mark every ${n}-gram that has at least one match within distance ${maxDistance}</li>
+                            <li>Calculate similarity: marked ${n}-grams across both texts / total ${n}-grams across both texts</li>
                         </ol>
                         <p style="margin: 5px 0 0 0; font-family: monospace; font-size: 12px;">
                             Fuzzy matching captures similar syntactic patterns that aren't identical, detecting paraphrased structures.
+                        </p>
+                        <p style="margin: 8px 0 0 0; font-size: 12px; color: #7d6608;">
+                            Each ${n}-gram counts once however many partners it matches, so the score stays
+                            between 0% and 100%. The match list below counts pairings, so it can be longer
+                            than the number of ${n}-grams involved.
                         </p>
                     </div>
 
@@ -9727,21 +9739,9 @@
 
                         if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
 
-                        // Count matching (n-gram, n-gram) combinations. Every combination is
-                        // distinct, so a counter equals the size of the Set of "i-j" keys this
-                        // used to build, without allocating a string per match.
-                        let matchCount = 0;
-                        for (let i = 0; i < ngrams1.length; i++) {
-                            const ng1 = ngrams1[i];
-                            for (let j = 0; j < ngrams2.length; j++) {
-                                if (levenshteinWithin(ng1, ngrams2[j], maxDistance)) matchCount++;
-                            }
-                        }
-                        const matches = { size: matchCount };
-
-                        // Calculate similarity as proportion of n-grams that have fuzzy matches
-                        const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
-                        return matches.size / totalNgrams;
+                        // Proportion of n-grams across both texts that have a fuzzy match.
+                        return fuzzyOverlapScore(ngrams1, ngrams2,
+                            (a, b) => levenshteinWithin(a, b, maxDistance));
                     }
 
             function jaccardSimilarity(text1, text2) {
@@ -9837,6 +9837,44 @@
                     counts[ngram] = (counts[ngram] || 0) + 1;
                 }
                 return counts;
+            }
+
+            // Fraction of n-grams, across both texts, that have at least one fuzzy match.
+            //
+            // The previous formula counted matching (i, j) COMBINATIONS and divided by
+            // max(len1, len2), so one n-gram matching twenty others contributed twenty. The
+            // result was not bounded by 1 despite being described as a proportion: with the
+            // shipped parameters, a pair of texts built from repeated parallel clauses scored
+            // 2.09 on shaib6lev3 and 1.82 on fuzzyNgram3. Repeated parallel structure is
+            // exactly what a close-ended prompt produces, and the combined raw similarity is a
+            // weighted mean that assumes every metric lies in [0, 1].
+            //
+            // Counting each n-gram once and dividing by the total across both texts is bounded,
+            // symmetric in the two texts, and reduces to the Sorensen-Dice coefficient when
+            // maxDistance is 0, since matched counts are then both |A intersect B|.
+            function fuzzyOverlapScore(itemsA, itemsB, isWithin) {
+                const lenA = itemsA.length, lenB = itemsB.length;
+                if (lenA === 0 && lenB === 0) return 1;
+                if (lenA === 0 || lenB === 0) return 0;
+
+                const matchedA = new Uint8Array(lenA);
+                const matchedB = new Uint8Array(lenB);
+                let countA = 0, countB = 0;
+
+                for (let i = 0; i < lenA; i++) {
+                    for (let j = 0; j < lenB; j++) {
+                        // Once both sides of a comparison are already matched, its outcome
+                        // cannot change either count, so skip the distance work entirely.
+                        if (matchedA[i] && matchedB[j]) continue;
+                        if (isWithin(itemsA[i], itemsB[j])) {
+                            if (!matchedA[i]) { matchedA[i] = 1; countA++; }
+                            if (!matchedB[j]) { matchedB[j] = 1; countB++; }
+                        }
+                    }
+                    if (countA === lenA && countB === lenB) break;
+                }
+
+                return (countA + countB) / (lenA + lenB);
             }
 
             // "Is the edit distance at most maxDistance?" - for the fuzzy metrics, which only
@@ -10280,20 +10318,11 @@
 
                         if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
 
-                        // As above: count combinations directly rather than building keys.
-                        let matchCount = 0;
+                        // Proportion of n-grams across both texts that have a fuzzy match.
+                        const joined1 = ngrams1.map(ng => ng.join(' '));
                         const joined2 = ngrams2.map(ng => ng.join(' '));
-                        for (let i = 0; i < ngrams1.length; i++) {
-                            const ng1 = ngrams1[i].join(' ');
-                            for (let j = 0; j < joined2.length; j++) {
-                                if (wordLevelLevenshteinWithin(ng1, joined2[j], maxWordDistance)) matchCount++;
-                            }
-                        }
-                        const matches = { size: matchCount };
-
-                        // Calculate similarity as proportion of n-grams that have fuzzy matches
-                        const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
-                        return matches.size / totalNgrams;
+                        return fuzzyOverlapScore(joined1, joined2,
+                            (a, b) => wordLevelLevenshteinWithin(a, b, maxWordDistance));
                     }
 
             function wordLevelLevenshteinDistance(phrase1, phrase2) {
@@ -10362,6 +10391,7 @@
                 modifiedPrecision,
                 extractNgrams,
                 countNgrams,
+                fuzzyOverlapScore,
                 levenshteinDistance,
                 levenshteinWithin,
                 wordLevelLevenshteinWithin,
