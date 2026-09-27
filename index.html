@@ -976,10 +976,11 @@
                     <select id="referenceColumnSelect"></select>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <label style="font-weight: 600; white-space: nowrap;">
-                        Threshold: <span id="thresholdDisplay" style="color: #e74c3c;">0.60</span>
+                    <label style="font-weight: 600; white-space: nowrap;"
+                           title="How far above the cohort baseline a pair must sit to be listed, in standard deviations. Raw similarity alone mostly reflects the prompt; this measures how much two responses resemble each other beyond that.">
+                        Threshold: <span id="thresholdDisplay" style="color: #e74c3c;">2.0</span> SD
                     </label>
-                    <input type="range" id="similarityThreshold" min="0.00" max="0.95" step="0.05" value="0.60"
+                    <input type="range" id="similarityThreshold" min="-1.0" max="5.0" step="0.1" value="2.0"
                         style="width: 150px; height: 6px;"
                         oninput="updateThreshold(this.value)">
                 </div>
@@ -1888,29 +1889,43 @@
                     </div>
 
                     <p style="font-size: 13px; line-height: 1.6; color: #555; margin-top: 20px; font-style: italic;">
-                        All 24 metrics are combined using weighted averaging with min-max normalization. Configure which metrics to use
-                        and their relative weights via the Metric Settings button in the header menu.
+                        Selected metrics are combined two ways: a weighted mean of the raw values, reported as
+                        <em>raw similarity</em>, and a double-centred z-score reported in standard deviations, which is
+                        what the pair list is ranked and filtered by. Configure which metrics to use and their relative
+                        weights via the Metric Settings button in the header menu.
                     </p>
 
                     <h4 style="color: #57068C; margin-top: 25px;">Interpretation</h4>
                     <p style="font-size: 14px; line-height: 1.6; color: #555;">
-                        High similarity scores indicate responses that share unusual amounts of vocabulary, phrasing, or structure.
-                        While this doesn't prove misconduct, it flags pairs that warrant closer human review. Adjust the similarity
-                        threshold to balance sensitivity and specificity for your use case.
+                        The cohort-relative score asks whether two responses resemble each other more than either
+                        resembles the rest of the cohort. Similarity that every response shares - a close-ended prompt,
+                        a common source, a shared house style - is absorbed into the row means and subtracted out, so
+                        what remains is resemblance specific to those two. A pair with high raw similarity but a low
+                        cohort-relative score is usually being driven by the prompt.
+                        <br><br>
+                        This flags pairs for human reading; it does not establish authorship. Adjust the threshold to
+                        balance sensitivity and specificity for your use case.
                     </p>
 
                     <h4 style="color: #e74c3c; margin-top: 25px;">Important Limitations</h4>
 
                     <p style="font-size: 14px; line-height: 1.6; color: #555; margin-bottom: 15px;">
-                        <strong>Scores are dataset-relative, not absolute.</strong> The tool uses min-max normalization to make metrics
-                        comparable <em>within</em> each analysis session, but this means similarity scores cannot be meaningfully compared
-                        <em>across</em> different datasets.
+                        <strong>Scores are dataset-relative, not absolute.</strong> Each metric is standardised against the
+                        spread of this cohort, so a score states a pair's position within this analysis and cannot be
+                        compared across datasets. A score in standard deviations is also not a p-value: every response
+                        appears in many pairs, so the values are not independent, and "3 SD" here is a ranking statement
+                        rather than a probability.
+                        <br><br>
+                        Double-centring needs enough responses for each row mean to be a stable estimate of how much a
+                        response resembles the cohort. Below ten responses it is switched off automatically and metrics
+                        are standardised without it; the console reports which mode was used.
                     </p>
 
                     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; margin-bottom: 15px;">
                         <p style="font-size: 13px; margin: 0 0 10px 0; color: #856404;">
-                            <strong>Why this matters:</strong> A 60% similarity score in one dataset may be more significant than a 75% score
-                            in another, depending on the "natural" variance in that corpus.
+                            <strong>Why this matters:</strong> A 60% raw similarity in one dataset may be more significant than 75%
+                            in another, depending on the natural variance in that corpus. The cohort-relative score exists to absorb
+                            exactly that difference, which is why it, and not the percentage, drives the ranking.
                         </p>
                         <p style="font-size: 13px; margin: 0; color: #856404;">
                             <strong>Example:</strong> Responses to "Define photosynthesis" naturally cluster around similar definitions (high baseline
@@ -2764,8 +2779,10 @@
         let analysisIsRunning = false;
         let cancelRequested = false;
         let isRestoringSession = false;
-        let metricNormalizationParams = {}; // Stores min/max for each metric for normalization
-        const METRIC_VERSION = 4; // Increment this when adding new metrics (v4 = single-source metrics; NER now always uses the Compromise NLP path)
+        // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
+        // spread of the adjusted values used to turn them into z-scores.
+        let metricAdjustmentParams = {};
+        const METRIC_VERSION = 5; // Increment this when adding new metrics (v5 = double-centred z-scores replace min-max normalization)
 
         // ========== HEADER MENU ==========
 
@@ -2814,7 +2831,8 @@
                         const reducedData = data.map(pair => ({
                             i1: pair.id1,
                             i2: pair.id2,
-                            s: Math.round(pair.similarity * 10000) / 10000  // Round to 4 decimals
+                            s: Math.round(pair.similarity * 10000) / 10000,  // Round to 4 decimals
+                            a: Math.round((pair.adjustedScore ?? 0) * 10000) / 10000
                             // Omit text1 and text2 to save space
                         }));
                         localStorage.setItem(key, JSON.stringify(reducedData));
@@ -2848,7 +2866,7 @@
                 localStorage.setItem('homogeneityAnalyzer_headers', JSON.stringify(headers));
                 localStorage.setItem('homogeneityAnalyzer_currentColumn', currentColumn.toString());
                 localStorage.setItem('homogeneityAnalyzer_referenceColumn', referenceColumn.toString());
-                localStorage.setItem('homogeneityAnalyzer_threshold', document.getElementById('similarityThreshold')?.value || '0.60');
+                localStorage.setItem('homogeneityAnalyzer_thresholdSd', document.getElementById('similarityThreshold')?.value || '2.0');
                 localStorage.setItem('homogeneityAnalyzer_metricVersion', METRIC_VERSION.toString());
 
                 // Save complete analysis state to avoid recalculation
@@ -2915,7 +2933,9 @@
                 const savedHeaders = localStorage.getItem('homogeneityAnalyzer_headers');
                 const savedColumn = localStorage.getItem('homogeneityAnalyzer_currentColumn');
                 const savedReferenceColumn = localStorage.getItem('homogeneityAnalyzer_referenceColumn');
-                const savedThreshold = localStorage.getItem('homogeneityAnalyzer_threshold');
+                // Deliberately a new key: the old one stored a raw-similarity cutoff, which would
+                // be read as a wildly permissive SD threshold.
+                const savedThreshold = localStorage.getItem('homogeneityAnalyzer_thresholdSd');
 
                 if (savedCsvData && savedHeaders) {
                     console.log('✓ Found saved CSV data and headers');
@@ -2992,6 +3012,7 @@
                                 id1: p.i1,
                                 id2: p.i2,
                                 similarity: p.s,
+                                adjustedScore: p.a ?? 0,
                                 text1: responseMap[p.i1] || '',
                                 text2: responseMap[p.i2] || ''
                             }));
@@ -3240,7 +3261,11 @@
                 const referenceId = oneIsReference ? pair.id1 : pair.id2;
                 const current = best.get(studentId);
                 if (!current || pair.similarity > current.similarity) {
-                    best.set(studentId, { referenceId, similarity: pair.similarity });
+                    best.set(studentId, {
+                        referenceId,
+                        similarity: pair.similarity,
+                        adjustedScore: pair.adjustedScore ?? 0
+                    });
                 }
             });
 
@@ -3249,7 +3274,8 @@
                 .map(r => ({
                     id: r.id,
                     referenceId: best.get(r.id).referenceId,
-                    similarity: best.get(r.id).similarity
+                    similarity: best.get(r.id).similarity,
+                    adjustedScore: best.get(r.id).adjustedScore
                 }))
                 .sort((a, b) => b.similarity - a.similarity);
         }
@@ -3296,6 +3322,7 @@
                     <td style="padding: 8px 10px; font-weight: ${i < 5 ? '600' : '400'};">${escapeHtml(String(entry.id))}</td>
                     <td style="padding: 8px 10px; color: #666;">${escapeHtml(String(entry.referenceId))}</td>
                     <td style="padding: 8px 10px; text-align: right; font-variant-numeric: tabular-nums;">${(entry.similarity * 100).toFixed(1)}%</td>
+                    <td style="padding: 8px 10px; text-align: right; font-variant-numeric: tabular-nums; color: ${entry.adjustedScore >= 2 ? '#c0392b' : '#666'};">${entry.adjustedScore >= 0 ? '+' : ''}${entry.adjustedScore.toFixed(1)}</td>
                 </tr>`).join('');
 
             container.innerHTML = `
@@ -3304,10 +3331,11 @@
                 </h4>
                 <p style="margin: 0 0 10px 0; font-size: 13px; color: #666;">
                     ${references.length} reference text${references.length === 1 ? '' : 's'} flagged
-                    (${escapeHtml(headers[referenceColumn] || '')}). Sorted by similarity, so the responses
-                    sitting closest to a known machine-written text are at the top. This is a ranking, not a
-                    verdict: a high value says a response resembles that reference on the selected metrics,
-                    which a shared prompt alone can produce.
+                    (${escapeHtml(headers[referenceColumn] || '')}). Sorted by raw similarity, so the responses
+                    sitting closest to a known machine-written text are at the top. The SD column is the
+                    cohort-relative score for the same pairing: a response can look close to a reference on raw
+                    similarity simply by resembling everything, and a low SD beside a high percentage is that
+                    case. This is a ranking, not a verdict - nothing here establishes authorship.
                 </p>
                 <div style="max-height: 320px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 5px;">
                     <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
@@ -3315,7 +3343,8 @@
                             <tr style="background: #f8f9fa; position: sticky; top: 0;">
                                 <th style="padding: 10px; text-align: left;">Response</th>
                                 <th style="padding: 10px; text-align: left;">Nearest reference</th>
-                                <th style="padding: 10px; text-align: right;">Similarity</th>
+                                <th style="padding: 10px; text-align: right;">Raw</th>
+                                <th style="padding: 10px; text-align: right;" title="Cohort-relative score, in standard deviations above the cohort baseline">SD</th>
                             </tr>
                         </thead>
                         <tbody>${rows}</tbody>
@@ -3757,15 +3786,72 @@
             return metrics;
         }
 
-        // Normalize a metric score using min-max normalization
-        function normalizeMetric(score, metricId) {
-            const params = metricNormalizationParams[metricId];
-            if (!params || params.max === params.min) {
-                console.warn(`[NORMALIZE] ${metricId}: No params or zero range, returning raw score ${score}`);
-                return score; // No normalization if params don't exist or range is zero
-            }
-            const normalized = (score - params.min) / (params.max - params.min);
-            return normalized;
+        // The cohort-relative value of one metric for one pair.
+        //
+        // With double-centering: adjusted(i,j) = sim(i,j) - mean(i) - mean(j) + grandMean,
+        // which asks whether these two resemble each other more than either resembles the
+        // cohort. Similarity every response shares - a close-ended prompt, a common source,
+        // a house style - lands in the row means and is subtracted out.
+        //
+        // The means leave the pair itself out. Including it would let a colluding pair inflate
+        // both of its own row means and so suppress the very signal being measured; with the
+        // same entry removed from both, the result stays symmetric in i and j.
+        function adjustedMetricValue(metricId, pair, responseIndex) {
+            const params = metricAdjustmentParams[metricId];
+            if (!params) return null;
+
+            const raw = pair.metrics[metricId];
+            if (raw === undefined || raw === null || isNaN(raw)) return null;
+            if (!params.centered) return raw;
+
+            const i = responseIndex.get(String(pair.id1));
+            const j = responseIndex.get(String(pair.id2));
+            if (i === undefined || j === undefined) return raw;
+
+            // Needs at least one other comparison per response, and one other pair overall.
+            if (params.rowCount[i] < 2 || params.rowCount[j] < 2 || params.count < 2) return raw;
+
+            const rowMeanI = (params.rowSum[i] - raw) / (params.rowCount[i] - 1);
+            const rowMeanJ = (params.rowSum[j] - raw) / (params.rowCount[j] - 1);
+            const grandMean = (params.total - raw) / (params.count - 1);
+
+            return raw - rowMeanI - rowMeanJ + grandMean;
+        }
+
+        // Centre and scale for a set of values, preferring the median and the median absolute
+        // deviation over the mean and standard deviation.
+        //
+        // The pairs this tool exists to surface are themselves extreme. Using the standard
+        // deviation would let them inflate the scale and shrink everyone else's score - a
+        // milder version of the failure that made min-max normalization fragile. The median and
+        // MAD are unmoved by a handful of outliers, so adding one colluding pair to a cohort
+        // does not rescale everybody.
+        //
+        // MAD is multiplied by 1.4826 so that, for normally distributed values, the result
+        // matches the standard deviation and a score can still be read in familiar SD units.
+        // Metrics where more than half the pairs share a value - common for sparse lexical
+        // overlap - have a MAD of zero, so the standard deviation is used instead.
+        function robustScale(values) {
+            const finite = values.filter(v => typeof v === 'number' && isFinite(v));
+            if (finite.length === 0) return { center: 0, scale: 0, method: 'empty' };
+
+            const sorted = Float64Array.from(finite).sort();
+            const median = arr => {
+                const mid = arr.length >> 1;
+                return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+            };
+
+            const center = median(sorted);
+            const deviations = Float64Array.from(sorted, v => Math.abs(v - center)).sort();
+            const mad = median(deviations) * 1.4826;
+            if (mad > 0) return { center, scale: mad, method: 'median/MAD' };
+
+            const mean = finite.reduce((a, b) => a + b, 0) / finite.length;
+            const variance = finite.reduce((a, b) => a + (b - mean) * (b - mean), 0) / finite.length;
+            const sd = Math.sqrt(variance);
+            return sd > 0
+                ? { center: mean, scale: sd, method: 'mean/SD (MAD was zero)' }
+                : { center, scale: 0, method: 'constant' };
         }
 
         async function calculateCombinedSimilarity(text1, text2) {
@@ -3778,15 +3864,16 @@
             // Get metric weights
             const weights = getMetricWeights();
 
-            // Calculate weighted average of NORMALIZED metrics
+            // Weighted mean of the raw metric values. This path runs for a pair that is not in
+            // the current analysis, so there is no cohort to measure against and no z-score to
+            // be had; every metric is bounded in [0, 1], so the plain mean is well defined.
             let weightedSum = 0;
             let totalWeight = 0;
 
             selected.forEach(metric => {
-                if (metrics[metric] !== undefined) {
+                if (metrics[metric] !== undefined && !isNaN(metrics[metric])) {
                     const weight = weights[metric] || 1.0;
-                    const normalizedScore = normalizeMetric(metrics[metric], metric);
-                    weightedSum += normalizedScore * weight;
+                    weightedSum += metrics[metric] * weight;
                     totalWeight += weight;
                 }
             });
@@ -8180,38 +8267,59 @@
                 (p.id1 === id1 && p.id2 === id2) || (p.id1 === id2 && p.id2 === id1)
             );
 
+            let adjusted = null;
             if (actualPair) {
-                // Use the pre-calculated similarity from the analysis
+                // Use the pre-calculated scores from the analysis
                 combined = actualPair.similarity;
+                adjusted = actualPair.adjustedScore;
             } else {
                 // Fallback: calculate it (shouldn't normally happen)
                 combined = await calculateCombinedSimilarity(text1, text2);
             }
 
             const count = selected.length;
+            const adjustedLine = adjusted === null ? '' : `
+                <div style="background: #ede7f6; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 10px 0;">Cohort-relative score</h4>
+                    <p style="font-size: 32px; font-weight: bold; margin: 0;">${adjusted >= 0 ? '+' : ''}${adjusted.toFixed(2)} SD</p>
+                    <p style="font-size: 12px; color: #666; margin: 5px 0 0 0;">
+                        How far this pair sits above what the rest of the cohort would predict for these two
+                        responses. This is what the pair list is ranked and filtered by.
+                    </p>
+                </div>`;
 
             return `
                 <div style="background: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                    <h3 style="margin: 0 0 10px 0;">Combined Similarity Score</h3>
-                    <p>The combined score uses <strong>normalized, weighted averaging</strong> of selected metrics:</p>
+                    <h3 style="margin: 0 0 10px 0;">How this pair is scored</h3>
+                    <p>Two figures are reported, because they answer different questions:</p>
                     <div style="font-family: monospace; background: white; padding: 12px; border-radius: 3px; margin: 10px 0; font-size: 13px; line-height: 1.8;">
-                        <strong>Step 1: Normalize each metric</strong><br>
-                        normalized = (score - min) / (max - min)<br>
-                        <span style="font-size: 11px; color: #666;">Scales all metrics to [0,1] using min/max across all pairs</span><br><br>
-                        <strong>Step 2: Apply weights</strong><br>
-                        combined = Σ(normalized × weight) / Σ(weight)<br>
-                        <span style="font-size: 11px; color: #666;">Higher weights = more influence on final score</span>
+                        <strong>Raw similarity</strong> - how alike are these two?<br>
+                        similarity = Σ(metric × weight) / Σ(weight)<br>
+                        <span style="font-size: 11px; color: #666;">Every metric is already bounded in [0,1], so this is a plain weighted mean.</span><br><br>
+                        <strong>Cohort-relative score</strong> - more alike than the cohort explains?<br>
+                        adjusted = sim(i,j) − mean(i) − mean(j) + grandMean<br>
+                        z = (adjusted − mean of adjusted) / SD of adjusted<br>
+                        <span style="font-size: 11px; color: #666;">Row means leave the pair itself out, so a pair cannot suppress its own signal.</span>
                     </div>
                     <p style="font-size: 12px; color: #666; margin: 10px 0 0 0;">
-                        This ensures high-signal metrics (e.g., fuzzy matching) aren't drowned out by low-signal metrics (e.g., word count). Configure metrics and weights via Metric Settings.
+                        Subtracting the row means removes whatever every response shares - a close-ended prompt,
+                        a common source, a house style - so what remains is resemblance specific to these two.
+                        A high raw similarity with a low cohort-relative score usually means the prompt is doing
+                        the work, not the pair.
+                    </p>
+                    <p style="font-size: 12px; color: #888; margin: 8px 0 0 0;">
+                        Each response appears in many pairs, so these values are not independent: treat the score
+                        as a ranking device, not a p-value.
                     </p>
                 </div>
 
                 <div style="background: #d5f4e6; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                    <h4 style="margin: 0 0 10px 0;">Final Combined Score</h4>
+                    <h4 style="margin: 0 0 10px 0;">Raw similarity</h4>
                     <p style="font-size: 32px; font-weight: bold; margin: 0;"><strong>${(combined * 100).toFixed(1)}%</strong></p>
-                    <p style="font-size: 12px; color: #666; margin: 5px 0 0 0;">Based on ${count} selected metrics</p>
+                    <p style="font-size: 12px; color: #666; margin: 5px 0 0 0;">Weighted mean across ${count} selected metrics</p>
                 </div>
+
+                ${adjustedLine}
 
                 <h4>Individual Metric Contributions</h4>
                 <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
@@ -8235,7 +8343,8 @@
 
                 <div style="background: #fff3cd; padding: 15px; border-radius: 5px;">
                     <p style="margin: 0; font-size: 14px;">
-                        <strong>Calculation:</strong> (${selected.map(m => (metrics[m] * 100).toFixed(1)).join(' + ')}) / ${count} = ${(combined * 100).toFixed(1)}%
+                        <strong>Raw similarity:</strong> (${selected.map(m => (metrics[m] * 100).toFixed(1)).join(' + ')}) / ${count} = ${(combined * 100).toFixed(1)}%
+                        <br><span style="font-size: 12px; color: #666;">Shown unweighted for legibility; the figure above applies each metric's configured weight.</span>
                     </p>
                 </div>
             `;
@@ -11025,68 +11134,129 @@
                 }
             }
 
-            // PHASE 2: Calculate normalization parameters (min/max for each metric)
-            updateProgress(totalPairs, totalPairs, 'Phase 2: Calculating normalization parameters...', 'Please wait...');
+            // PHASE 2: Per-metric cohort statistics for double-centering and standardisation.
+            //
+            // Replaces min-max normalization, under which a single extreme pair set the scale
+            // for the whole cohort: two near-identical responses would push every other pair
+            // toward zero on the lexical metrics.
+            updateProgress(totalPairs, totalPairs, 'Phase 2: Measuring cohort baseline...', 'Please wait...');
             await sleep(0);
 
-            metricNormalizationParams = {};
+            const responseIndex = new Map(responses.map((r, i) => [String(r.id), i]));
+            const cohortSize = responses.length;
+
+            // Below this, a response is compared with too few others for its row mean to be a
+            // stable estimate of "how much this one resembles the cohort", and subtracting a
+            // noisy row mean does more harm than the prompt effect it removes.
+            const DOUBLE_CENTERING_MIN_RESPONSES = 10;
+            const doubleCentering = cohortSize >= DOUBLE_CENTERING_MIN_RESPONSES;
+
+            // First pass: the sums double-centring needs. Only aggregates are kept, never the
+            // full pairwise matrix - a pair's centred value is recoverable from its own raw
+            // value plus these, so this stays O(n) per metric rather than O(n^2).
+            metricAdjustmentParams = {};
             selectedMetrics.forEach(metricId => {
-                const values = pairMetrics.map(pair => pair.metrics[metricId]).filter(v => v !== undefined && !isNaN(v));
-                if (values.length > 0) {
-                    metricNormalizationParams[metricId] = {
-                        min: Math.min(...values),
-                        max: Math.max(...values)
-                    };
-                    console.log(`[NORM PARAMS] ${metricId}: min=${metricNormalizationParams[metricId].min.toFixed(4)}, max=${metricNormalizationParams[metricId].max.toFixed(4)}, count=${values.length}`);
-                } else {
-                    console.warn(`[NORM PARAMS] ${metricId}: No values found!`);
+                const rowSum = new Float64Array(cohortSize);
+                const rowCount = new Float64Array(cohortSize);
+                let total = 0, count = 0;
+
+                pairMetrics.forEach(pair => {
+                    const raw = pair.metrics[metricId];
+                    if (raw === undefined || raw === null || isNaN(raw)) return;
+                    const i = responseIndex.get(String(pair.id1));
+                    const j = responseIndex.get(String(pair.id2));
+                    if (i === undefined || j === undefined) return;
+                    rowSum[i] += raw; rowCount[i]++;
+                    rowSum[j] += raw; rowCount[j]++;
+                    total += raw; count++;
+                });
+
+                if (count === 0) {
+                    console.warn(`[COHORT] ${metricId}: no values, metric will not contribute`);
+                    return;
                 }
+                metricAdjustmentParams[metricId] = {
+                    rowSum, rowCount, total, count, centered: doubleCentering, center: 0, scale: 0
+                };
             });
 
-            // PHASE 3: Calculate combined normalized similarities
-            updateProgress(totalPairs, totalPairs, 'Phase 3: Combining normalized metrics...', 'Please wait...');
+            // Second pass: the spread of each metric's adjusted values, so they can be put on a
+            // common scale before being averaged together.
+            selectedMetrics.forEach(metricId => {
+                const params = metricAdjustmentParams[metricId];
+                if (!params) return;
+
+                const adjusted = [];
+                pairMetrics.forEach(pair => {
+                    const value = adjustedMetricValue(metricId, pair, responseIndex);
+                    if (value !== null) adjusted.push(value);
+                });
+
+                Object.assign(params, robustScale(adjusted));
+            });
+
+            console.log(`[COHORT] ${cohortSize} responses, double-centering ${doubleCentering ? 'on' : `off (needs ${DOUBLE_CENTERING_MIN_RESPONSES}+ responses)`}`);
+
+            // PHASE 3: Combine into a raw similarity and a cohort-relative score.
+            updateProgress(totalPairs, totalPairs, 'Phase 3: Combining metrics...', 'Please wait...');
             await sleep(0);
 
             const weights = getMetricWeights();
-            let debugCount = 0;
+            const combinedScores = [];
             pairMetrics.forEach(pair => {
-                let weightedSum = 0;
-                let totalWeight = 0;
+                let weightedZ = 0, zWeight = 0;
+                let weightedRaw = 0, rawWeight = 0;
 
                 selectedMetrics.forEach(metric => {
-                    if (pair.metrics[metric] !== undefined && !isNaN(pair.metrics[metric])) {
-                        const weight = weights[metric] || 1.0;
-                        const normalizedScore = normalizeMetric(pair.metrics[metric], metric);
-                        weightedSum += normalizedScore * weight;
-                        totalWeight += weight;
+                    const raw = pair.metrics[metric];
+                    if (raw === undefined || raw === null || isNaN(raw)) return;
+                    const weight = weights[metric] || 1.0;
 
-                        // Debug first pair only
-                        if (debugCount === 0) {
-                            console.log(`[COMBINE] ${metric}: raw=${pair.metrics[metric].toFixed(4)}, normalized=${normalizedScore.toFixed(4)}, weight=${weight}`);
-                        }
-                    }
+                    // Every metric is a similarity bounded in [0, 1], so a plain weighted mean
+                    // of the raw values is a meaningful "how alike are these two" figure.
+                    weightedRaw += raw * weight;
+                    rawWeight += weight;
+
+                    // A metric with no spread across the cohort separates nobody, so it is left
+                    // out of the standardised score rather than contributing a constant.
+                    const params = metricAdjustmentParams[metric];
+                    if (!params || !params.scale) return;
+                    const adjusted = adjustedMetricValue(metric, pair, responseIndex);
+                    if (adjusted === null) return;
+                    weightedZ += ((adjusted - params.center) / params.scale) * weight;
+                    zWeight += weight;
                 });
 
-                const combinedSimilarity = totalWeight > 0 ? weightedSum / totalWeight : 0;
-
-                if (debugCount === 0) {
-                    console.log(`[COMBINE] First pair: weightedSum=${weightedSum.toFixed(4)}, totalWeight=${totalWeight.toFixed(4)}, combined=${combinedSimilarity.toFixed(4)}`);
-                    debugCount++;
-                }
+                const combined = zWeight > 0 ? weightedZ / zWeight : 0;
+                combinedScores.push(combined);
 
                 allSimilarityPairs.push({
                     id1: pair.id1,
                     id2: pair.id2,
                     text1: pair.text1,
                     text2: pair.text2,
-                    similarity: combinedSimilarity
+                    similarity: rawWeight > 0 ? weightedRaw / rawWeight : 0,
+                    adjustedScore: combined
                 });
             });
 
-            // Sort by similarity (highest first)
+            // Standardise the combined score as well. Averaging k correlated z-scores does not
+            // give unit variance - it lands somewhere between 1/sqrt(k) and 1 depending on how
+            // correlated the selected metrics are - so without this final step the threshold
+            // would mean something different for every metric selection.
+            const combinedScale = robustScale(combinedScores);
+            if (combinedScale.scale) {
+                allSimilarityPairs.forEach(pair => {
+                    pair.adjustedScore = (pair.adjustedScore - combinedScale.center) / combinedScale.scale;
+                });
+            }
+            console.log(`[COHORT] combined score centred at ${combinedScale.center.toFixed(4)}, scaled by ${combinedScale.scale.toFixed(4)} (${combinedScale.method})`);
+
+            // Rank by the cohort-relative score: it is the one that answers "are these two more
+            // alike than the cohort explains", which raw similarity cannot.
             updateProgress(totalPairs, totalPairs, 'Sorting results...', 'Please wait...');
             await sleep(0);
-            allSimilarityPairs.sort((a, b) => b.similarity - a.similarity);
+            allSimilarityPairs.sort((a, b) => b.adjustedScore - a.adjustedScore);
 
             console.log('✓ Calculated', allSimilarityPairs.length, 'similarity pairs');
             console.log('[RESULTS] Top 10 similarity scores:', allSimilarityPairs.slice(0, 10).map(p => ({
@@ -11104,14 +11274,17 @@
         }
 
         function updateThreshold(value) {
-            document.getElementById('thresholdDisplay').textContent = value;
-
             const threshold = parseFloat(value);
-            const filteredPairs = allSimilarityPairs.filter(p => p.similarity >= threshold);
+            document.getElementById('thresholdDisplay').textContent = threshold.toFixed(1);
+
+            // Filter on the cohort-relative score rather than raw similarity: with a close-ended
+            // prompt nearly every pair scores high on raw similarity, so a raw cutoff either
+            // lists everyone or no one.
+            const filteredPairs = allSimilarityPairs.filter(p => (p.adjustedScore ?? 0) >= threshold);
 
             // Update pair count display
             document.getElementById('pairCountDisplay').textContent =
-                `${filteredPairs.length} pairs above threshold`;
+                `${filteredPairs.length} pairs at or above ${threshold.toFixed(1)} SD`;
 
             renderSimilarityPairs(filteredPairs);
             renderFlaggedRespondents(filteredPairs);
@@ -11124,15 +11297,20 @@
             if (pairs.length === 0) {
                 container.innerHTML = `
                     <p style="color: #999; text-align: center; padding: 40px;">
-                        No pairs found above the current threshold. Try lowering the threshold.
+                        No pairs at or above the current threshold. Try lowering it - the threshold is in
+                        standard deviations above the cohort baseline, so 2.0 keeps only pairs that are
+                        markedly more alike than the prompt alone explains.
                     </p>
                 `;
                 return;
             }
 
             container.innerHTML = pairs.map(pair => {
-                const scoreClass = pair.similarity >= 0.85 ? 'similarity-high' :
-                                   pair.similarity >= 0.70 ? 'similarity-medium' : 'similarity-low';
+                // Colour by the cohort-relative score, which is what the ranking means; the raw
+                // percentage is shown alongside because it is what a reader wants to see next.
+                const adjusted = pair.adjustedScore ?? 0;
+                const scoreClass = adjusted >= 3 ? 'similarity-high' :
+                                   adjusted >= 2 ? 'similarity-medium' : 'similarity-low';
 
                 const preview = pair.text1.substring(0, 200) + (pair.text1.length > 200 ? '...' : '');
 
@@ -11140,7 +11318,8 @@
                     <div class="similarity-pair-item" onclick='showPairComparison(${JSON.stringify(pair).replace(/'/g, "\\'")} )'>
                         <div class="pair-header-row">
                             <span class="pair-ids">Respondent ${pair.id1} ↔ Respondent ${pair.id2}</span>
-                            <span class="similarity-badge ${scoreClass}">${(pair.similarity * 100).toFixed(1)}%</span>
+                            <span class="similarity-badge ${scoreClass}" title="Cohort-relative score: how far above the cohort baseline this pair sits">${adjusted >= 0 ? '+' : ''}${adjusted.toFixed(1)} SD</span>
+                            <span style="font-size: 12px; color: #666; margin-left: 6px;" title="Raw weighted similarity across the selected metrics">${(pair.similarity * 100).toFixed(1)}% raw</span>
                         </div>
                         <div class="response-preview">${escapeHtml(preview)}</div>
                     </div>
@@ -12137,7 +12316,8 @@
                     referenceLine = `
                         <p style="margin: 10px 0 0 0; font-size: 12px; color: #555;">
                             Nearest reference: <strong>${escapeHtml(String(nearest.referenceId))}</strong>
-                            at ${(nearest.similarity * 100).toFixed(1)}% on the selected metrics.
+                            at ${(nearest.similarity * 100).toFixed(1)}% raw,
+                            ${nearest.adjustedScore >= 0 ? '+' : ''}${nearest.adjustedScore.toFixed(1)} SD against the cohort.
                         </p>`;
                 }
             }
