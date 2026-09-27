@@ -2331,35 +2331,41 @@
             }
         };
 
-        // Semantic similarity using transformer embeddings
+        // Embed one string. The chunking, caching and comparison all live in the main script;
+        // this is the only part that needs the module-scoped pipeline.
+        window.embedText = async function(text) {
+            if (!window.transformersEnabled || !window.semanticModel) return null;
+            const out = await window.semanticModel(text, { pooling: 'mean', normalize: true });
+            return Float32Array.from(out.data);
+        };
+
+        // Semantic similarity between two texts.
+        //
+        // During an analysis the cohort index holds centred, chunked embeddings for every
+        // response, and this reads from it. Outside one - a detail panel for a pair that is not
+        // in the current analysis - it falls back to embedding both texts directly, which
+        // cannot centre against a cohort that does not exist and so returns a plain cosine.
         window.transformerSemanticSimilarity = async function(text1, text2) {
             if (!window.transformersEnabled || !window.semanticModel) {
                 return 0;
             }
 
+            const fromIndex = typeof semanticSimilarityFromIndex === 'function'
+                ? semanticSimilarityFromIndex(text1, text2)
+                : null;
+            if (fromIndex !== null) return fromIndex;
+
             try {
-                // Generate embeddings for both texts
-                const embedding1 = await window.semanticModel(text1, {
-                    pooling: 'mean',
-                    normalize: true
-                });
+                const embedding1 = await window.embedText(text1);
+                const embedding2 = await window.embedText(text2);
+                if (!embedding1 || !embedding2) return 0;
 
-                const embedding2 = await window.semanticModel(text2, {
-                    pooling: 'mean',
-                    normalize: true
-                });
+                let dot = 0;
+                for (let i = 0; i < embedding1.length; i++) dot += embedding1[i] * embedding2[i];
 
-                // Calculate cosine similarity (dot product of normalized vectors)
-                let dotProduct = 0;
-                const data1 = embedding1.data;
-                const data2 = embedding2.data;
-
-                for (let i = 0; i < data1.length; i++) {
-                    dotProduct += data1[i] * data2[i];
-                }
-
-                // Clamp to [0, 1] range
-                return Math.max(0, Math.min(1, dotProduct));
+                // Uncentred, so the usual [0,1] clamp applies rather than the (1+cos)/2 mapping
+                // the cohort path uses.
+                return Math.max(0, Math.min(1, dot));
             } catch (error) {
                 console.error('Error calculating transformer similarity:', error);
                 return 0;
@@ -2823,7 +2829,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 7; // Increment this when adding new metrics (v7 = shared rare n-grams, IDF-weighted)
+        const METRIC_VERSION = 8; // Increment this when adding new metrics (v8 = chunked, cohort-centred embeddings)
 
         // ========== HEADER MENU ==========
 
@@ -8668,6 +8674,159 @@
         }
 
         // ============================================================================
+        // SEMANTIC EMBEDDINGS
+        // ============================================================================
+        //
+        // Two problems with embedding a response as one vector and comparing pairs directly.
+        //
+        // Truncation: all-MiniLM-L6-v2 stops at 512 word-piece tokens. Measured against this
+        // build, text beyond roughly 450-480 words has no effect at all - two 2,600-word texts
+        // whose tails discuss completely different subjects produce byte-identical embeddings.
+        // Anything longer than that is compared on its opening only, so long responses are
+        // split into chunks and every chunk is embedded.
+        //
+        // Cost: embedding is ~170ms for a short text and ~680ms for a long one, and the model
+        // was being run twice per pair. At 100 responses that is 9,900 runs where 100 would do,
+        // which is the difference between half an hour and twenty seconds. Embeddings are now
+        // computed once per chunk and cached.
+
+        let semanticIndex = null; // text -> { chunks: Float32Array[] }, already centred
+
+        // Comfortably inside the measured truncation point, so no chunk is silently cut.
+        const SEMANTIC_CHUNK_WORDS = 300;
+
+        // Split on sentence boundaries, accumulating whole sentences up to the chunk budget, so
+        // a chunk is never cut mid-clause. A text within the budget stays a single chunk, which
+        // makes this reduce to the previous behaviour for short responses.
+        function semanticChunks(text) {
+            const clean = String(text).trim();
+            if (!clean) return [];
+            if (clean.split(/\s+/).length <= SEMANTIC_CHUNK_WORDS) return [clean];
+
+            const sentences = clean.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [clean];
+            const chunks = [];
+            let current = [], currentWords = 0;
+
+            sentences.forEach(sentence => {
+                const words = sentence.trim().split(/\s+/).length;
+                if (currentWords > 0 && currentWords + words > SEMANTIC_CHUNK_WORDS) {
+                    chunks.push(current.join(' ').trim());
+                    current = []; currentWords = 0;
+                }
+                current.push(sentence.trim());
+                currentWords += words;
+            });
+            if (current.length > 0) chunks.push(current.join(' ').trim());
+
+            return chunks.filter(c => c.length > 0);
+        }
+
+        function normaliseVector(vec) {
+            let sum = 0;
+            for (let i = 0; i < vec.length; i++) sum += vec[i] * vec[i];
+            const magnitude = Math.sqrt(sum);
+            if (magnitude === 0) return vec;
+            const out = new Float32Array(vec.length);
+            for (let i = 0; i < vec.length; i++) out[i] = vec[i] / magnitude;
+            return out;
+        }
+
+        function dotProduct(a, b) {
+            let sum = 0;
+            for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
+            return sum;
+        }
+
+        // Embed every chunk in the cohort once, then subtract the cohort's mean vector.
+        //
+        // Responses to one prompt all point in much the same direction, which compresses every
+        // cosine into a narrow band near the top - on the test cohort, plain cosines spanned
+        // 0.47 to 0.98 and the gap between the closest pair and the next was 0.07. Removing the
+        // shared direction first widened that gap to 0.24. It is the same idea as the
+        // double-centring applied to the metric scores, done in the vector space instead.
+        async function buildSemanticIndex(texts, onProgress) {
+            if (!window.transformersEnabled || !window.embedText) return null;
+
+            const byChunk = new Map();       // chunk text -> raw embedding
+            const chunksByText = new Map();  // response text -> chunk strings
+
+            texts.forEach(text => chunksByText.set(text, semanticChunks(text)));
+
+            const distinct = [];
+            chunksByText.forEach(chunks => chunks.forEach(c => {
+                if (!byChunk.has(c)) { byChunk.set(c, null); distinct.push(c); }
+            }));
+
+            for (let i = 0; i < distinct.length; i++) {
+                const chunk = distinct[i];
+                byChunk.set(chunk, await window.embedText(chunk));
+                if (onProgress) await onProgress(i + 1, distinct.length);
+            }
+
+            const any = byChunk.values().next().value;
+            if (!any) return null;
+
+            const dimensions = any.length;
+            const mean = new Float64Array(dimensions);
+            let counted = 0;
+            byChunk.forEach(vec => {
+                if (!vec) return;
+                for (let d = 0; d < dimensions; d++) mean[d] += vec[d];
+                counted++;
+            });
+            if (counted === 0) return null;
+            for (let d = 0; d < dimensions; d++) mean[d] /= counted;
+
+            const centred = new Map();
+            byChunk.forEach((vec, chunk) => {
+                if (!vec) return;
+                const shifted = new Float32Array(dimensions);
+                for (let d = 0; d < dimensions; d++) shifted[d] = vec[d] - mean[d];
+                centred.set(chunk, normaliseVector(shifted));
+            });
+
+            const byText = new Map();
+            chunksByText.forEach((chunks, text) => {
+                byText.set(text, chunks.map(c => centred.get(c)).filter(Boolean));
+            });
+
+            return { byText, chunkCount: distinct.length, textCount: texts.length, dimensions };
+        }
+
+        // Best-match alignment between two sets of chunks, averaged in both directions so the
+        // result does not depend on argument order. For responses short enough to be a single
+        // chunk this is exactly the cosine between them.
+        //
+        // Centring makes cosine genuinely span [-1, 1], so the result is mapped onto [0, 1]:
+        // 0.5 is "aligned about as well as the average pair in this cohort". Clamping negatives
+        // to zero instead would flatten the whole below-average half into ties and cost the
+        // standardisation downstream its spread.
+        function alignChunkSets(chunksA, chunksB) {
+            if (!chunksA || !chunksB || chunksA.length === 0 || chunksB.length === 0) return 0;
+
+            const bestFor = (from, to) => {
+                let total = 0;
+                from.forEach(vec => {
+                    let best = -Infinity;
+                    to.forEach(other => { const s = dotProduct(vec, other); if (s > best) best = s; });
+                    total += best;
+                });
+                return total / from.length;
+            };
+
+            const cosine = (bestFor(chunksA, chunksB) + bestFor(chunksB, chunksA)) / 2;
+            return Math.min(1, Math.max(0, (1 + cosine) / 2));
+        }
+
+        function semanticSimilarityFromIndex(text1, text2) {
+            if (!semanticIndex) return null;
+            const a = semanticIndex.byText.get(text1);
+            const b = semanticIndex.byText.get(text2);
+            if (!a || !b) return null;
+            return alignChunkSets(a, b);
+        }
+
+        // ============================================================================
         // SHARED RARE N-GRAMS
         // ============================================================================
         //
@@ -11069,37 +11228,72 @@
                 }
             }
 
-            // PHASE 1.5: Calculate transformer semantic similarity (if selected)
-            // This must run in main thread because AI model can't run in Web Workers
-            if (selectedMetrics.includes('transformerSemantic') && window.transformersEnabled && window.transformerSemanticSimilarity) {
-                updateProgress(0, pairMetrics.length, 'Calculating AI semantic similarity...', 'This may take a moment...');
+            // PHASE 1.5: Semantic similarity (if selected)
+            // Runs on the main thread because the model lives there. The model itself now runs
+            // once per distinct chunk rather than twice per pair; scoring a pair afterwards is
+            // only dot products over cached vectors.
+            if (selectedMetrics.includes('transformerSemantic') && window.transformersEnabled) {
+                updateProgress(0, pairMetrics.length, 'Embedding responses...', 'Running the model once per response...');
                 await sleep(0);
 
-                for (let i = 0; i < pairMetrics.length; i++) {
-                    if (cancelRequested) {
-                        hideProgress();
-                        analysisIsRunning = false;
-                        cancelRequested = false;
-                        alert('Analysis cancelled by user.');
-                        return;
-                    }
-
-                    const pair = pairMetrics[i];
-                    try {
-                        pair.metrics.transformerSemantic = await window.transformerSemanticSimilarity(pair.text1, pair.text2);
-                    } catch (error) {
-                        console.error('Error calculating transformer similarity for pair:', error);
-                        pair.metrics.transformerSemantic = 0;
-                    }
-
-                    // Update progress every 10 pairs
-                    if (i % 10 === 0 || i === pairMetrics.length - 1) {
-                        updateProgress(i + 1, pairMetrics.length,
-                            `Calculating AI semantic similarity... (${i + 1}/${pairMetrics.length})`,
-                            'This may take a moment...');
-                        await sleep(0);
-                    }
+                try {
+                    semanticIndex = await buildSemanticIndex(
+                        responses.map(r => r.text),
+                        async (done, total) => {
+                            if (done % 5 === 0 || done === total) {
+                                updateProgress(done, total, `Embedding responses... (${done}/${total} chunks)`,
+                                    'Each chunk is embedded once and reused for every comparison.');
+                                await sleep(0);
+                            }
+                        }
+                    );
+                } catch (error) {
+                    console.error('Failed to build the semantic index:', error);
+                    semanticIndex = null;
                 }
+
+                if (semanticIndex) {
+                    console.log(`[SEMANTIC] ${semanticIndex.chunkCount} chunks embedded for ${semanticIndex.textCount} responses`);
+                    updateProgress(0, pairMetrics.length, 'Comparing responses semantically...', 'Aligning passages...');
+                    await sleep(0);
+
+                    for (let i = 0; i < pairMetrics.length; i++) {
+                        if (cancelRequested) {
+                            hideProgress();
+                            analysisIsRunning = false;
+                            cancelRequested = false;
+                            alert('Analysis cancelled by user.');
+                            return;
+                        }
+
+                        const pair = pairMetrics[i];
+                        try {
+                            const score = semanticSimilarityFromIndex(pair.text1, pair.text2);
+                            pair.metrics.transformerSemantic = score === null ? 0 : score;
+                        } catch (error) {
+                            console.error('Error calculating semantic similarity for pair:', error);
+                            pair.metrics.transformerSemantic = 0;
+                        }
+
+                        if (i % 200 === 0 || i === pairMetrics.length - 1) {
+                            updateProgress(i + 1, pairMetrics.length,
+                                `Comparing responses semantically... (${i + 1}/${pairMetrics.length})`,
+                                'Aligning passages...');
+                            await sleep(0);
+                        }
+                    }
+                } else {
+                    // Deliberately left unset rather than zeroed. Phase 3 skips a metric with no
+                    // value, but counts one that is present and zero - which would pull every
+                    // pair's raw similarity down by this metric's full weight and make a failed
+                    // model load look like a cohort that simply has nothing in common.
+                    console.warn('[SEMANTIC] index unavailable; transformerSemantic will not contribute');
+                }
+            } else {
+                // Texts are keyed by content, so an index left over from a previous run - a
+                // different question column, an edited CSV - would answer detail panels with
+                // vectors centred against a cohort that is no longer on screen.
+                semanticIndex = null;
             }
 
             // PHASE 1.5b: Calculate perplexity fingerprint similarity (if selected)
