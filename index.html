@@ -1011,17 +1011,31 @@
                     <button class="modal-close" onclick="toggleMetricSettings()">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <p style="margin: 0 0 10px 0; font-size: 13px; color: #666;">
-                        Select metrics to include in the Combined similarity score and set their weights. Higher weights = more influence on final score.
+                    <p style="margin: 0 0 14px 0; font-size: 13px; color: #666;">
+                        Evidence is grouped into five families. Metrics average <em>within</em> a family, and the
+                        family weight decides how much that kind of evidence counts toward the score. Set five
+                        weights here rather than thirty-seven below.
                     </p>
-                    <div style="margin-bottom: 20px; padding: 12px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px;">
-                        <strong style="color: #1565c0;">Weight Guidelines:</strong>
-                        <div style="font-size: 12px; color: #555; margin-top: 5px;">
-                            High (3.0+): Precise textual overlap (fuzzy matching, n-grams)<br>
-                            Medium (1.0): Content similarity (cosine, Jaccard, NER)<br>
-                            Low (0.3): Structural similarity (word count, sentence length)
-                        </div>
+
+                    <div id="familyWeightPanel" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px;"></div>
+
+                    <div style="margin-bottom: 18px; padding: 12px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px; font-size: 12px; color: #555;">
+                        <strong style="color: #1565c0;">Why families.</strong>
+                        Eleven of the metrics below are variations on lexical overlap and eight on part-of-speech
+                        templates. Weighted individually, the lexical view voted eleven times, so the score drifted
+                        toward wording whether or not you intended it. Grouped, each kind of evidence gets one vote
+                        and you decide how loud it is.
                     </div>
+
+                    <details id="individualMetricsSection" style="margin-bottom: 4px;">
+                        <summary style="cursor: pointer; font-weight: 600; color: #57068C; padding: 8px 0; font-size: 14px;">
+                            Individual metrics (advanced)
+                        </summary>
+                        <p style="margin: 8px 0 14px 0; font-size: 12px; color: #666;">
+                            Turn a metric off to exclude it entirely. Its weight now applies <em>within</em> its
+                            family, deciding how much it counts against its siblings rather than against the whole
+                            score - so raising one lexical metric no longer makes the score more lexical overall.
+                        </p>
 
                     <div style="display: flex; flex-direction: column; gap: 12px;">
                         <!-- Cosine Similarity -->
@@ -1608,6 +1622,8 @@
                             </div>
                         </div>
                     </div>
+
+                    </details>
 
                     <div style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
                         <div id="metricModalFooterText" style="font-size: 13px; color: #666; font-style: italic;">
@@ -2906,7 +2922,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 9; // Increment this when adding new metrics (v9 = metrics with no spread no longer drag the raw mean)
+        const METRIC_VERSION = 10; // Increment this when adding new metrics (v10 = metrics grouped into weighted families)
 
         // ========== HEADER MENU ==========
 
@@ -4043,6 +4059,7 @@
         function toggleMetricSettings() {
             const modal = document.getElementById('metricSettings');
             if (modal.style.display === 'none' || modal.style.display === '') {
+                renderFamilyWeightPanel();
                 // Update button text and footer message based on CSV loaded state
                 const csvLoaded = csvData && csvData.length > 0;
                 const applyBtn = document.getElementById('metricApplyBtn');
@@ -4128,6 +4145,9 @@
             const weightSlider = document.getElementById(`weight_${metricId}`);
             const weightDisplay = document.getElementById(`weightDisplay_${metricId}`);
 
+            // A family whose members are all switched off should say so straight away.
+            setTimeout(updateFamilyMemberCounts, 0);
+
             if (weightSlider) {
                 weightSlider.disabled = !checkbox.checked;
             }
@@ -4157,8 +4177,10 @@
             const selected = getSelectedMetrics();
             const weights = getMetricWeights();
 
+            familyWeights = getFamilyWeights();
             localStorage.setItem('homogeneityAnalyzer_selectedMetrics', JSON.stringify(selected));
             localStorage.setItem('homogeneityAnalyzer_metricWeights', JSON.stringify(weights));
+            localStorage.setItem('homogeneityAnalyzer_familyWeights', JSON.stringify(familyWeights));
 
             // Close the modal
             toggleMetricSettings();
@@ -4187,6 +4209,20 @@
                         checkbox.checked = selected.includes(id);
                     }
                 });
+            }
+
+            // Restore family weights, falling back to the defaults for anything unseen - so a
+            // family added in a later version starts at its default rather than undefined.
+            const savedFamilyWeights = localStorage.getItem('homogeneityAnalyzer_familyWeights');
+            if (savedFamilyWeights) {
+                try {
+                    const parsed = JSON.parse(savedFamilyWeights);
+                    METRIC_FAMILIES.forEach(f => {
+                        if (typeof parsed[f.id] === 'number') familyWeights[f.id] = parsed[f.id];
+                    });
+                } catch (e) {
+                    console.warn('Could not restore family weights:', e);
+                }
             }
 
             // Restore metric weights
@@ -8769,6 +8805,133 @@
         }
 
         // ============================================================================
+        // METRIC FAMILIES
+        // ============================================================================
+        //
+        // The metrics are not independent evidence. Eleven of them are variations on lexical
+        // overlap, eight on part-of-speech templates. Weighting each one separately meant the
+        // lexical view effectively voted eleven times, so adding another n-gram variant made the
+        // combined score more about wording whether or not that was the intent.
+        //
+        // Grouping fixes that at the source: metrics average within a family, and only the
+        // family weight decides how much that kind of evidence counts. Adding a twelfth lexical
+        // metric now refines the content family rather than amplifying it.
+        //
+        // It also makes the tool playable. Five weights with meanings you can state are
+        // something you can reason about; thirty-seven are not.
+        //
+        // Default weights follow how much each kind of evidence is worth for this question:
+        // rare shared content is the strongest and least ambiguous signal, surface statistics
+        // the weakest, since two responses near the class average score high on those without
+        // sharing anything at all.
+        const METRIC_FAMILIES = [
+            {
+                id: 'content', label: 'Shared content', defaultWeight: 2.0,
+                blurb: 'Words, phrases and names the two responses actually have in common.',
+                metrics: ['rareNgram', 'ner', 'cosine', 'jaccard', 'wordNgram', 'bleu',
+                          'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5']
+            },
+            {
+                id: 'semantic', label: 'Meaning', defaultWeight: 1.5,
+                blurb: 'What the responses say, compared by embedding rather than by wording.',
+                metrics: ['transformerSemantic']
+            },
+            {
+                id: 'syntax', label: 'Sentence templates', defaultWeight: 1.5,
+                blurb: 'Part-of-speech patterns: how sentences are built, largely independent of topic.',
+                metrics: ['posSyntactic', 'shaib4', 'shaib5', 'shaib6',
+                          'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS']
+            },
+            {
+                id: 'style', label: 'Style habits', defaultWeight: 1.0,
+                blurb: 'Function words, punctuation and transitions - the choices writers make without noticing.',
+                metrics: ['functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram',
+                          'functionWordDist', 'burrowsDelta', 'burrowsDeltaTopicAgnostic',
+                          'ngram', 'ngram4', 'ngram5', 'ngramPunctuation',
+                          'transitionWords', 'pronounDensity', 'perplexity']
+            },
+            {
+                id: 'surface', label: 'Surface statistics', defaultWeight: 0.3,
+                blurb: 'Length and diversity figures. Two responses near the class average score high here without sharing anything, so this is weighted lightly by default.',
+                metrics: ['wordCount', 'avgSentenceLength', 'sentenceVariance',
+                          'ttr', 'mattr', 'temporalBurstiness']
+            }
+        ];
+
+        const FAMILY_OF_METRIC = (() => {
+            const map = {};
+            METRIC_FAMILIES.forEach(f => f.metrics.forEach(m => { map[m] = f.id; }));
+            return map;
+        })();
+
+        let familyWeights = Object.fromEntries(METRIC_FAMILIES.map(f => [f.id, f.defaultWeight]));
+
+        function renderFamilyWeightPanel() {
+            const panel = document.getElementById('familyWeightPanel');
+            if (!panel) return;
+
+            panel.innerHTML = METRIC_FAMILIES.map(f => {
+                const w = familyWeights[f.id] ?? f.defaultWeight;
+                return `
+                <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #d5c9e0; border-radius: 5px; background: #faf7fd;">
+                    <div style="flex: 1; margin-right: 12px;">
+                        <strong style="color: #57068C;">${f.label}</strong>
+                        <div style="font-size: 12px; color: #666; margin-top: 2px;">${f.blurb}</div>
+                        <div style="font-size: 11px; color: #999; margin-top: 3px;" id="familyCount_${f.id}"></div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; min-width: 230px;">
+                        <label style="font-size: 12px; color: #666; min-width: 50px;">Weight:</label>
+                        <input type="range" id="familyWeight_${f.id}" min="0" max="5" step="0.1" value="${w}"
+                               style="flex: 1;" oninput="updateFamilyWeightDisplay('${f.id}', this.value)">
+                        <span id="familyWeightDisplay_${f.id}" style="min-width: 30px; font-weight: 600; font-size: 13px;">${Number(w).toFixed(1)}</span>
+                    </div>
+                </div>`;
+            }).join('');
+
+            updateFamilyMemberCounts();
+        }
+
+        // Show how many of a family's metrics are actually switched on, so a family weighted
+        // heavily with everything beneath it disabled is visible rather than puzzling.
+        function updateFamilyMemberCounts() {
+            const selected = new Set(getSelectedMetrics());
+            METRIC_FAMILIES.forEach(f => {
+                const el = document.getElementById('familyCount_' + f.id);
+                if (!el) return;
+                const on = f.metrics.filter(m => selected.has(m)).length;
+                el.textContent = on === 0
+                    ? `no metrics enabled - this family contributes nothing`
+                    : `${on} of ${f.metrics.length} metrics enabled`;
+                el.style.color = on === 0 ? '#c0392b' : '#999';
+            });
+        }
+
+        function updateFamilyWeightDisplay(familyId, value) {
+            const display = document.getElementById('familyWeightDisplay_' + familyId);
+            if (display) display.textContent = Number(value).toFixed(1);
+            familyWeights[familyId] = parseFloat(value);
+        }
+
+        function getFamilyWeights() {
+            const out = {};
+            METRIC_FAMILIES.forEach(f => {
+                const el = document.getElementById('familyWeight_' + f.id);
+                const v = el ? parseFloat(el.value) : familyWeights[f.id];
+                out[f.id] = isNaN(v) ? f.defaultWeight : v;
+            });
+            return out;
+        }
+
+        // A metric with no family would silently vanish from the score, so say so loudly.
+        function warnAboutUnfamiliedMetrics(selected) {
+            const orphans = selected.filter(m => !FAMILY_OF_METRIC[m]);
+            if (orphans.length) {
+                console.error('[FAMILIES] these selected metrics belong to no family and will not be scored:', orphans);
+            }
+            return orphans;
+        }
+
+        // ============================================================================
         // SEMANTIC EMBEDDINGS
         // ============================================================================
         //
@@ -11941,9 +12104,20 @@
             }
             window.lastInertMetrics = inertMetrics;
 
+            warnAboutUnfamiliedMetrics(contributingMetrics);
+            const familyWeightsNow = getFamilyWeights();
+            const activeFamilies = METRIC_FAMILIES
+                .filter(f => f.metrics.some(m => contributingMetrics.includes(m)))
+                .map(f => f.id);
+
+            // Pass one: each family's own score for each pair, as the weighted mean of its
+            // members' z-scores. Averaging within the family is the whole point - eleven lexical
+            // metrics now produce one content score rather than eleven votes - and the per-metric
+            // sliders survive as weights *within* a family.
+            const familyRaw = Object.fromEntries(activeFamilies.map(f => [f, []]));
             pairMetrics.forEach(pair => {
-                let weightedZ = 0, zWeight = 0;
                 let weightedRaw = 0, rawWeight = 0;
+                const perFamily = Object.fromEntries(activeFamilies.map(f => [f, { sum: 0, weight: 0 }]));
 
                 contributingMetrics.forEach(metric => {
                     const raw = pair.metrics[metric];
@@ -11955,11 +12129,46 @@
                     weightedRaw += raw * weight;
                     rawWeight += weight;
 
+                    const family = FAMILY_OF_METRIC[metric];
+                    const bucket = family && perFamily[family];
+                    if (!bucket) return;
+
                     const params = metricAdjustmentParams[metric];
                     const adjusted = adjustedMetricValue(metric, pair, responseIndex);
                     if (adjusted === null) return;
-                    weightedZ += ((adjusted - params.center) / params.scale) * weight;
-                    zWeight += weight;
+                    bucket.sum += ((adjusted - params.center) / params.scale) * weight;
+                    bucket.weight += weight;
+                });
+
+                pair.rawSimilarity = rawWeight > 0 ? weightedRaw / rawWeight : 0;
+                activeFamilies.forEach(f => {
+                    const b = perFamily[f];
+                    familyRaw[f].push(b.weight > 0 ? b.sum / b.weight : NaN);
+                });
+            });
+
+            // Pass two: put the families on a common scale, so a family made of many correlated
+            // metrics does not end up with a narrower spread than one built from a single metric,
+            // which would quietly make its weight mean less than the number on the slider says.
+            const familyScale = {};
+            activeFamilies.forEach(f => {
+                familyScale[f] = robustScale(familyRaw[f].filter(v => !isNaN(v)));
+            });
+
+            pairMetrics.forEach((pair, idx) => {
+                let weightedZ = 0, zWeight = 0;
+                pair.familyZ = {};
+
+                activeFamilies.forEach(f => {
+                    const value = familyRaw[f][idx];
+                    const scale = familyScale[f];
+                    if (isNaN(value) || !scale || !scale.scale) return;
+                    const z = (value - scale.center) / scale.scale;
+                    pair.familyZ[f] = z;
+                    const w = familyWeightsNow[f] ?? 1;
+                    if (w <= 0) return;
+                    weightedZ += z * w;
+                    zWeight += w;
                 });
 
                 const combined = zWeight > 0 ? weightedZ / zWeight : 0;
@@ -11970,7 +12179,8 @@
                     id2: pair.id2,
                     text1: pair.text1,
                     text2: pair.text2,
-                    similarity: rawWeight > 0 ? weightedRaw / rawWeight : 0,
+                    familyZ: pair.familyZ,
+                    similarity: pair.rawSimilarity,
                     adjustedScore: combined
                 });
             });
