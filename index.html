@@ -2936,7 +2936,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 10; // Increment this when adding new metrics (v10 = metrics grouped into weighted families)
+        const METRIC_VERSION = 11; // Increment this when adding new metrics (v11 = every response gets a unique id)
 
         // ========== HEADER MENU ==========
 
@@ -3392,19 +3392,72 @@
             return csvData.filter(row => isReferenceValue(row[referenceColumn])).length;
         }
 
+        // Build the response list, giving every response an id that is unique.
+        //
+        // Almost everything downstream is keyed by id: the index that double-centring uses to
+        // find a response's row means, the MDS distance matrix, the reference lookup, the pair
+        // list. A blank or repeated id silently collapses those keys together, so two responses
+        // share one entry and one of them is scored against the other's statistics.
+        //
+        // That is not hypothetical. In condensedVIP - Undergraduate.csv the first column has no
+        // header and several rows leave it empty; three responses shared the blank id, so the
+        // index held twenty entries for twenty-two responses and two were scored against the
+        // wrong row. Nothing in the interface showed it beyond a pair labelled "Respondent ".
+        //
+        // A missing or repeated id is replaced with one derived from the row it came from, which
+        // is both unique and traceable back to the spreadsheet.
+        function buildResponses() {
+            const used = new Set();
+            const synthesized = [];
+
+            const list = csvData.map((row, rowIndex) => {
+                const original = String(row[0] ?? '').trim();
+                // +2 rather than +1: row 1 of the file is the header, so csvData[0] is line 2.
+                let id = original || `Row ${rowIndex + 2}`;
+
+                if (used.has(id)) {
+                    let suffix = 2;
+                    while (used.has(`${id} (${suffix})`)) suffix++;
+                    id = `${id} (${suffix})`;
+                }
+                if (id !== original) synthesized.push({ rowIndex, original, id });
+                used.add(id);
+
+                return { id, rowIndex, text: row[currentColumn] || '', isReference: false };
+            }).filter(r => r.text.trim());
+
+            // Only report the ones that survived the empty-text filter; a synthesized id on a
+            // row that was dropped anyway is not worth mentioning.
+            const kept = new Set(list.map(r => r.id));
+            lastSynthesizedIds = synthesized.filter(s => kept.has(s.id));
+            if (lastSynthesizedIds.length) {
+                console.warn(`[IDS] ${lastSynthesizedIds.length} response(s) had a missing or repeated id and were renamed:`,
+                    lastSynthesizedIds.map(s => `${s.original === '' ? '(blank)' : s.original} -> ${s.id}`));
+            }
+            return list;
+        }
+
+        let lastSynthesizedIds = [];
+
         // Re-derive isReference on the live responses from the current column. Called after a
         // restore (a session saved before this feature existed has no flags at all) and when
         // the column selection changes, so the flags can never drift from csvData.
         function applyReferenceFlags() {
             if (responses.length === 0) return 0;
 
-            const flaggedById = new Map();
-            csvData.forEach(row => {
-                flaggedById.set(String(row[0]), referenceColumn >= 0 && isReferenceValue(row[referenceColumn]));
-            });
+            // Keyed by the row a response came from, not by its id: ids may have been
+            // synthesized precisely because the originals were blank or repeated, and looking
+            // those up would flag the wrong responses or none at all.
+            // A session saved before responses carried a row index has to fall back to matching
+            // on the id, which is what it was keyed by at the time.
+            const byId = new Map();
+            csvData.forEach(row => { byId.set(String(row[0] ?? '').trim(), row); });
 
             responses.forEach(r => {
-                r.isReference = flaggedById.get(String(r.id)) === true;
+                const row = typeof r.rowIndex === 'number'
+                    ? csvData[r.rowIndex]
+                    : byId.get(String(r.id).trim());
+                r.isReference = !!row && referenceColumn >= 0 && isReferenceValue(row[referenceColumn]);
             });
 
             return responses.filter(r => r.isReference).length;
@@ -3669,11 +3722,7 @@
 
         async function analyzeCorpus() {
             // Update global responses array
-            responses = csvData.map(row => ({
-                id: row[0],
-                text: row[currentColumn] || '',
-                isReference: false
-            })).filter(r => r.text.trim());
+            responses = buildResponses();
             applyReferenceFlags();
 
             if (responses.length === 0) return;
