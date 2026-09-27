@@ -975,6 +975,16 @@
                     </label>
                     <select id="referenceColumnSelect"></select>
                 </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="persistResponsesToggle" onchange="setResponsePersistence(this.checked)">
+                    <label for="persistResponsesToggle" style="font-weight: 600; white-space: nowrap; cursor: pointer;"
+                           title="Off by default. Analysis always runs locally and nothing is ever uploaded, but storing responses leaves a copy of student writing in this browser after the tab closes - which matters on a shared or office machine.">
+                        Keep data in this browser
+                    </label>
+                    <span id="persistResponsesNote" style="font-size: 11px; color: #666; max-width: 230px; line-height: 1.3;">
+                        Responses are held in this tab only, and are gone when it closes.
+                    </span>
+                </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <label style="font-weight: 600; white-space: nowrap;"
                            title="How far above the cohort baseline a pair must sit to be listed, in standard deviations. Raw similarity alone mostly reflects the prompt; this measures how much two responses resemble each other beyond that.">
@@ -2821,6 +2831,72 @@
         let headers = [];
         let currentColumn = 0;
         let referenceColumn = -1; // CSV column flagging known-AI reference texts; -1 = none
+
+        // Whether response text may be written to this browser's localStorage.
+        //
+        // Off by default. The analysis runs entirely in the page and never sends text anywhere,
+        // but persisting it means a copy of student writing outlives the tab, on whatever
+        // machine the tool was opened on - a shared office computer, a lab machine, a borrowed
+        // laptop. That is a decision for whoever is handling the data, not a default, so the
+        // tool asks rather than assumes. Settings that contain no student writing - column
+        // choices, threshold, metric weights - are remembered either way.
+        const PERSIST_PREFERENCE_KEY = 'homogeneityAnalyzer_persistResponses';
+
+        // Keys holding response text or anything derived from it.
+        const RESPONSE_DATA_KEYS = [
+            'homogeneityAnalyzer_csvData',
+            'homogeneityAnalyzer_headers',
+            'homogeneityAnalyzer_analysisResults',
+            'homogeneityAnalyzer_similarityPairs',
+            'homogeneityAnalyzer_responses',
+            'homogeneityAnalyzer_patternSearchTerms'
+        ];
+
+        function responsePersistenceEnabled() {
+            try {
+                return localStorage.getItem(PERSIST_PREFERENCE_KEY) === 'true';
+            } catch (error) {
+                return false; // storage unavailable: behave as if opted out
+            }
+        }
+
+        function purgeStoredResponses() {
+            try {
+                RESPONSE_DATA_KEYS.forEach(key => localStorage.removeItem(key));
+            } catch (error) {
+                console.warn('Could not clear stored responses:', error);
+            }
+        }
+
+        function setResponsePersistence(enabled) {
+            try {
+                localStorage.setItem(PERSIST_PREFERENCE_KEY, enabled ? 'true' : 'false');
+            } catch (error) {
+                console.warn('Could not record the storage preference:', error);
+            }
+
+            if (!enabled) {
+                purgeStoredResponses();
+                console.log('Response text will not be stored, and any previously stored copy has been removed.');
+            } else {
+                saveSession();
+                console.log('Response text will be kept in this browser until cleared.');
+            }
+            updatePersistenceUI();
+        }
+
+        function updatePersistenceUI() {
+            const toggle = document.getElementById('persistResponsesToggle');
+            const note = document.getElementById('persistResponsesNote');
+            if (!toggle || !note) return;
+
+            const on = responsePersistenceEnabled();
+            toggle.checked = on;
+            note.textContent = on
+                ? 'Responses are kept in this browser until you clear them.'
+                : 'Responses are held in this tab only, and are gone when it closes.';
+            note.style.color = on ? '#b9770e' : '#666';
+        }
         let analysisResults = {};
         let responses = []; // Global responses array
         let analysisIsRunning = false;
@@ -2907,14 +2983,26 @@
                 return;
             }
 
+            // Settings carry no student writing and are always remembered; everything derived
+            // from the responses themselves is written only where the user has opted in.
+            const mayStoreResponses = responsePersistenceEnabled();
+
             try {
-                // Always save basic session data
-                localStorage.setItem('homogeneityAnalyzer_csvData', JSON.stringify(csvData));
-                localStorage.setItem('homogeneityAnalyzer_headers', JSON.stringify(headers));
+                if (mayStoreResponses) {
+                    localStorage.setItem('homogeneityAnalyzer_csvData', JSON.stringify(csvData));
+                    localStorage.setItem('homogeneityAnalyzer_headers', JSON.stringify(headers));
+                }
                 localStorage.setItem('homogeneityAnalyzer_currentColumn', currentColumn.toString());
                 localStorage.setItem('homogeneityAnalyzer_referenceColumn', referenceColumn.toString());
                 localStorage.setItem('homogeneityAnalyzer_thresholdSd', document.getElementById('similarityThreshold')?.value || '2.0');
                 localStorage.setItem('homogeneityAnalyzer_metricVersion', METRIC_VERSION.toString());
+
+                // Analysis results, similarity pairs and responses all embed the response text
+                // itself, so they follow the same preference as the CSV above.
+                if (!mayStoreResponses) {
+                    purgeStoredResponses();
+                    return;
+                }
 
                 // Save complete analysis state to avoid recalculation
                 // Always save these, even if they're empty/null, to indicate state
@@ -3146,6 +3234,7 @@
                 localStorage.removeItem('homogeneityAnalyzer_responses');
                 localStorage.removeItem('homogeneityAnalyzer_panelMode');
                 localStorage.removeItem('homogeneityAnalyzer_patternSearchTerms');
+                purgeStoredResponses();
                 location.reload();
             }
         }
@@ -3190,6 +3279,11 @@
             initPerplexityIntegration().catch(err => {
                 console.warn('Failed to check perplexity API:', err);
             });
+
+            // Show the storage preference, and clear anything a previous version stored before
+            // this setting existed - opting in has to be a decision, not an inheritance.
+            if (!responsePersistenceEnabled()) purgeStoredResponses();
+            updatePersistenceUI();
 
             // Event Listeners
             document.getElementById('csvFile').addEventListener('change', handleFileUpload);
