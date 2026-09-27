@@ -1678,6 +1678,35 @@
                             </div>
                         </div>
 
+                        <!-- Shared Names and Figures -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
+                            <input type="checkbox" id="metric_sharedEntities" checked onchange="toggleMetricWeight('sharedEntities')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Shared Names and Figures</strong>
+                                <div style="font-size: 12px; color: #666;">People, places, organisations and numbers the pair share, weighted by how rare each is in the class</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_sharedEntities" min="0.1" max="5.0" step="0.1" value="3.0"
+                                       style="flex: 1;" oninput="updateWeightDisplay('sharedEntities', this.value)">
+                                <span id="weightDisplay_sharedEntities" style="min-width: 35px; font-weight: 600; font-size: 13px;">3.0</span>
+                            </div>
+                        </div>
+                        <!-- Distinctive Vocabulary -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
+                            <input type="checkbox" id="metric_distinctiveVocab" checked onchange="toggleMetricWeight('distinctiveVocab')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Distinctive Vocabulary</strong>
+                                <div style="font-size: 12px; color: #666;">Content words the pair share, weighted by how uncommon they are in the class (TF-IDF cosine)</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_distinctiveVocab" min="0.1" max="5.0" step="0.1" value="2.5"
+                                       style="flex: 1;" oninput="updateWeightDisplay('distinctiveVocab', this.value)">
+                                <span id="weightDisplay_distinctiveVocab" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.5</span>
+                            </div>
+                        </div>
+
                         <!-- Shared Rare Phrases -->
                         <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
                             <input type="checkbox" id="metric_rareNgram" checked onchange="toggleMetricWeight('rareNgram')">
@@ -2611,7 +2640,7 @@
             if (posTagCache.size >= POS_CACHE_LIMIT) posTagCache.clear();
 
             entry = { penn: null, simple: null, functionWords: null, rareNgrams: null,
-                      styleProfile: null, ngrams: new Map() };
+                      styleProfile: null, contentProfile: null, ngrams: new Map() };
             posTagCache.set(text, entry);
             return entry;
         }
@@ -2994,7 +3023,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 12; // Increment this when adding new metrics (v12 = chatbot register, punctuation, transitions, openers)
+        const METRIC_VERSION = 13; // Increment this when adding new metrics (v13 = rarity-weighted entities and vocabulary)
 
         // ========== HEADER MENU ==========
 
@@ -4101,6 +4130,12 @@
                     case 'sentenceOpeners':
                         metrics.sentenceOpeners = sentenceOpenerSimilarity(text1, text2);
                         break;
+                    case 'sharedEntities':
+                        metrics.sharedEntities = sharedEntitySimilarity(text1, text2);
+                        break;
+                    case 'distinctiveVocab':
+                        metrics.distinctiveVocab = distinctiveVocabularySimilarity(text1, text2);
+                        break;
                     case 'burrowsDeltaTopicAgnostic':
                         metrics.burrowsDeltaTopicAgnostic = calculateTopicAgnosticBurrowsDelta(text1, text2);
                         break;
@@ -4226,7 +4261,8 @@
                               'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
                               'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
                               'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
-                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
+                              'sharedEntities', 'distinctiveVocab'];
             return metricIds.filter(id => {
                 const checkbox = document.getElementById('metric_' + id);
                 return checkbox && checkbox.checked;
@@ -4339,7 +4375,8 @@
                               'temporalBurstiness', 'pronounDensity', 'transitionWords', 'ngramPunctuation', 'wordNgram',
                               'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5',
                               'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
-                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
+                              'sharedEntities', 'distinctiveVocab'];
 
             metricIds.forEach(id => {
                 const slider = document.getElementById(`weight_${id}`);
@@ -4381,7 +4418,8 @@
                                   'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
                                   'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
                                   'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
-                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
+                              'sharedEntities', 'distinctiveVocab'];
                 metricIds.forEach(id => {
                     const checkbox = document.getElementById('metric_' + id);
                     if (checkbox) {
@@ -4559,6 +4597,12 @@
                     case 'sentenceOpeners':
                         metricValues['Sentence Openers'] = sentenceOpenerSimilarity(text1, text2);
                         break;
+                    case 'sharedEntities':
+                        metricValues['Shared Names and Figures'] = sharedEntitySimilarity(text1, text2);
+                        break;
+                    case 'distinctiveVocab':
+                        metricValues['Distinctive Vocabulary'] = distinctiveVocabularySimilarity(text1, text2);
+                        break;
                 }
             }
 
@@ -4605,7 +4649,9 @@
                 'registerMarkers': 'Chatbot Register',
                 'punctuationProfile': 'Punctuation Profile',
                 'transitionChoice': 'Which Transitions',
-                'sentenceOpeners': 'Sentence Openers'
+                'sentenceOpeners': 'Sentence Openers',
+                'sharedEntities': 'Shared Names and Figures',
+                'distinctiveVocab': 'Distinctive Vocabulary'
             };
 
             const metricTooltips = {
@@ -9238,6 +9284,112 @@
         }
 
         // ============================================================================
+        // CONTENT PROFILES
+        // ============================================================================
+        //
+        // Two measures of shared substance, both weighted by rarity in this cohort.
+        //
+        // The existing NER metric compares entity sets directly, which makes it largely a
+        // measure of topic: everyone answering the same prompt names the same institution. What
+        // is telling is not that two responses both mention the university, but that they both
+        // invoke the same unusual example - a specific person, an oddly precise figure - that
+        // nobody else does. Weighting each shared entity by how rare it is across the cohort is
+        // what separates those two cases, and it is why the review rates rarity-weighted
+        // entities among the strongest signals while rating raw entity counts among the weakest.
+        //
+        // Distinctive vocabulary is the same idea over ordinary content words rather than named
+        // things, which catches shared unusual phrasing that never forms a repeated phrase.
+
+        let contentProfileStats = null;
+
+        // Normalised so that "the University's" and "university" do not count as different
+        // things, matching how a reader would judge whether two responses named the same entity.
+        function normalizeEntityName(value) {
+            return String(value).toLowerCase()
+                .replace(/['\u2019]s\b/g, '')
+                .replace(/[^\w\s%.-]/g, '')
+                .replace(/[.,-]+$/, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function contentProfileFor(text) {
+            const entry = posCacheEntry(text);
+            if (entry.contentProfile) return entry.contentProfile;
+
+            // Named things: people, places, organisations, plus figures and percentages, which
+            // are often the most distinctive thing two responses can share.
+            const entities = new Map();
+            const addEntity = (value) => {
+                const key = normalizeEntityName(value);
+                if (key.length > 1) entities.set(key, (entities.get(key) || 0) + 1);
+            };
+            try {
+                if (window.nlp) {
+                    const doc = window.nlp(String(text));
+                    doc.people().out('array').forEach(addEntity);
+                    doc.places().out('array').forEach(addEntity);
+                    doc.organizations().out('array').forEach(addEntity);
+                }
+            } catch (error) {
+                console.warn('Entity extraction failed for one response:', error);
+            }
+            (String(text).match(/\b\d[\d,.]*\s*(?:%|percent\b)?/g) || []).forEach(addEntity);
+
+            // Content words: everything that is not a function word or too short to carry much.
+            const vocabulary = new Map();
+            String(text).toLowerCase().replace(/[^\w\s'-]/g, ' ').split(/\s+/).forEach(w => {
+                if (w.length <= 3) return;
+                if (typeof isStopWord === 'function' && isStopWord(w)) return;
+                vocabulary.set(w, (vocabulary.get(w) || 0) + 1);
+            });
+
+            entry.contentProfile = { entities, vocabulary };
+            return entry.contentProfile;
+        }
+
+        function buildContentProfileStats(texts) {
+            const profiles = texts.map(contentProfileFor);
+            if (!profiles.length) return null;
+
+            const documentFrequency = (pick) => {
+                const df = new Map();
+                profiles.forEach(p => pick(p).forEach((_, key) => df.set(key, (df.get(key) || 0) + 1)));
+                return df;
+            };
+
+            return {
+                total: profiles.length,
+                entityDf: documentFrequency(p => p.entities),
+                vocabularyDf: documentFrequency(p => p.vocabulary)
+            };
+        }
+
+        function sharedEntitySimilarity(text1, text2) {
+            if (!contentProfileStats) return 0;
+            return idfWeightedCosine(contentProfileFor(text1).entities, contentProfileFor(text2).entities,
+                                     contentProfileStats.entityDf, contentProfileStats.total);
+        }
+
+        function distinctiveVocabularySimilarity(text1, text2) {
+            if (!contentProfileStats) return 0;
+            return idfWeightedCosine(contentProfileFor(text1).vocabulary, contentProfileFor(text2).vocabulary,
+                                     contentProfileStats.vocabularyDf, contentProfileStats.total);
+        }
+
+        // The shared entities of a pair, rarest first - for the detail panel.
+        function sharedEntityDetails(text1, text2, limit = 20) {
+            if (!contentProfileStats) return [];
+            const a = contentProfileFor(text1).entities, b = contentProfileFor(text2).entities;
+            const shared = [];
+            a.forEach((_, key) => {
+                if (!b.has(key)) return;
+                shared.push({ entity: key, df: contentProfileStats.entityDf.get(key) || 0 });
+            });
+            return shared.sort((x, y) => x.df - y.df).slice(0, limit);
+        }
+
+        // ============================================================================
         // METRIC FAMILIES
         // ============================================================================
         //
@@ -9261,7 +9413,8 @@
             {
                 id: 'content', label: 'Shared content', defaultWeight: 2.0,
                 blurb: 'Words, phrases and names the two responses actually have in common.',
-                metrics: ['rareNgram', 'ner', 'cosine', 'jaccard', 'wordNgram', 'bleu',
+                metrics: ['rareNgram', 'sharedEntities', 'distinctiveVocab', 'ner', 'cosine',
+                          'jaccard', 'wordNgram', 'bleu',
                           'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5']
             },
             {
@@ -11866,6 +12019,23 @@
                 styleProfileStats = null;
             }
 
+            // PHASE 0e: Cohort statistics for the content profiles (if any are selected)
+            const contentMetrics = ['sharedEntities', 'distinctiveVocab'];
+            if (contentMetrics.some(m => selectedMetrics.includes(m))) {
+                updateProgress(0, totalPairs, 'Phase 0e: Indexing names and vocabulary...', 'Measuring what is common here...');
+                await sleep(10);
+
+                contentProfileStats = buildContentProfileStats(responses.map(r => r.text));
+
+                if (contentProfileStats) {
+                    updateProgress(0, totalPairs, 'Phase 0e: Content index complete',
+                        `${contentProfileStats.entityDf.size} distinct names and figures, ${contentProfileStats.vocabularyDf.size} content words`);
+                    await sleep(300);
+                }
+            } else {
+                contentProfileStats = null;
+            }
+
             // PHASE 1: Calculate all individual metrics using Web Workers (parallel)
             updateProgress(0, totalPairs, 'Phase 1: Calculating individual metrics (parallel)...', 'Initializing workers...');
             await sleep(10);
@@ -12588,14 +12758,17 @@
 
             // PHASE 1.95: Style profiles (if selected)
             // Main thread, like the rare phrases: these compare against cohort-wide statistics.
-            if (styleProfileStats && styleMetrics.some(m => selectedMetrics.includes(m))) {
+            if ((styleProfileStats && styleMetrics.some(m => selectedMetrics.includes(m))) ||
+                (contentProfileStats && contentMetrics.some(m => selectedMetrics.includes(m)))) {
                 const scorers = {
                     registerMarkers: registerSimilarity,
                     punctuationProfile: punctuationSimilarity,
                     transitionChoice: transitionChoiceSimilarity,
-                    sentenceOpeners: sentenceOpenerSimilarity
+                    sentenceOpeners: sentenceOpenerSimilarity,
+                    sharedEntities: sharedEntitySimilarity,
+                    distinctiveVocab: distinctiveVocabularySimilarity
                 };
-                const active = styleMetrics.filter(m => selectedMetrics.includes(m));
+                const active = styleMetrics.concat(contentMetrics).filter(m => selectedMetrics.includes(m));
 
                 updateProgress(0, pairMetrics.length, 'Comparing writing style...', 'Register, punctuation, transitions and openers...');
                 await sleep(0);
@@ -12876,7 +13049,8 @@
             shaib6lev3: 'Shaib 6-gram (fuzzy 3)', simplePOS: 'Simple syntactic pattern',
             functionWordDist: 'Function-word distribution', rareNgram: 'Shared rare phrases',
             registerMarkers: 'Chatbot register', punctuationProfile: 'Punctuation profile',
-            transitionChoice: 'Which transitions', sentenceOpeners: 'Sentence openers'
+            transitionChoice: 'Which transitions', sentenceOpeners: 'Sentence openers',
+            sharedEntities: 'Shared names and figures', distinctiveVocab: 'Distinctive vocabulary'
         };
 
         function renderInertMetricNotice() {
