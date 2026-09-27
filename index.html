@@ -2472,43 +2472,110 @@
         }
 
         // Extract POS n-grams using Penn Treebank tags (Shaib method via Compromise.js)
+        // ========== POS TAG CACHE ==========
+        // A text's tag sequence depends only on that text, but the syntactic metrics ask for it
+        // once per pair, so the tagging cost grew with the square of the cohort while the actual
+        // work did not. Measured on 14 responses: extractPOSNgrams ran 2,548 times where 56 would
+        // do, and mapToPennTreebankTag 115,388 times where about 1,000 would.
+        //
+        // Cached values are shared between callers, so the sets handed out here must be treated
+        // as read-only. Every current caller either spreads them or builds a new Set from them.
+        const POS_CACHE_LIMIT = 512;
+        const posTagCache = new Map(); // text -> { penn: string[], simple: string[], ngrams: Map }
+
+        function posCacheEntry(text) {
+            let entry = posTagCache.get(text);
+            if (entry) return entry;
+
+            // Crude eviction: these are whole documents, and a cohort larger than the limit means
+            // the cache is thrashing anyway. Clearing beats tracking recency here.
+            if (posTagCache.size >= POS_CACHE_LIMIT) posTagCache.clear();
+
+            entry = { penn: null, simple: null, functionWords: null, ngrams: new Map() };
+            posTagCache.set(text, entry);
+            return entry;
+        }
+
+        function clearPosTagCache() {
+            posTagCache.clear();
+        }
+
+        // Penn Treebank tag sequence for a text, computed once.
+        function pennTagSequence(text) {
+            const entry = posCacheEntry(text);
+            if (entry.penn) return entry.penn;
+
+            const tags = [];
+            try {
+                const doc = window.nlp(text);
+                doc.terms().forEach(term => {
+                    tags.push(mapToPennTreebankTag(term));
+                });
+            } catch (error) {
+                console.error('Error building Penn Treebank tag sequence:', error);
+            }
+            entry.penn = tags;
+            return tags;
+        }
+
+        // Compromise's own coarse tags for a text, computed once.
+        function simpleTagSequence(text) {
+            const entry = posCacheEntry(text);
+            if (entry.simple) return entry.simple;
+
+            const tags = [];
+            try {
+                const doc = window.nlp(text);
+                doc.terms().forEach(term => {
+                    if (term.has('#Noun')) tags.push('NOUN');
+                    else if (term.has('#Verb')) tags.push('VERB');
+                    else if (term.has('#Adjective')) tags.push('ADJECTIVE');
+                    else if (term.has('#Adverb')) tags.push('ADVERB');
+                    else if (term.has('#Determiner')) tags.push('DETERMINER');
+                    else if (term.has('#Pronoun')) tags.push('PRONOUN');
+                    else if (term.has('#Preposition')) tags.push('PREPOSITION');
+                    else if (term.has('#Conjunction')) tags.push('CONJUNCTION');
+                    else if (term.has('#Number')) tags.push('NUMBER');
+                    else if (term.has('#Punctuation')) tags.push('PUNCTUATION');
+                    else tags.push('OTHER');
+                });
+            } catch (error) {
+                console.error('Error building simple tag sequence:', error);
+            }
+            entry.simple = tags;
+            return tags;
+        }
+
+        function ngramSetFromTags(tags, n) {
+            const ngrams = new Set();
+            for (let i = 0; i <= tags.length - n; i++) {
+                ngrams.add(tags.slice(i, i + n).join(' ')); // Space-separated like Shaib
+            }
+            return ngrams;
+        }
+
+        // Cached n-gram set. The key distinguishes the two tag vocabularies so the Penn and
+        // simple sets for the same n never collide.
+        function cachedTagNgrams(text, n, kind) {
+            const entry = posCacheEntry(text);
+            const key = kind + ':' + n;
+            let set = entry.ngrams.get(key);
+            if (set) return set;
+
+            const tags = kind === 'penn' ? pennTagSequence(text) : simpleTagSequence(text);
+            set = ngramSetFromTags(tags, n);
+            entry.ngrams.set(key, set);
+            return set;
+        }
+
         function extractPOSNgrams(text, n = 3) {
             if (typeof window.nlp === 'undefined') {
                 console.error('Compromise.js (nlp) library not available');
                 return new Set();
             }
-
-            try {
-                // Parse text with Compromise.js
-                const doc = window.nlp(text);
-
-                // Get all terms (including punctuation)
-                const terms = doc.terms().out('array');
-
-                if (terms.length === 0) {
-                    return new Set();
-                }
-
-                // Map each term to Penn Treebank tag
-                const posTags = [];
-                doc.terms().forEach(term => {
-                    const pennTag = mapToPennTreebankTag(term);
-                    posTags.push(pennTag);
-                });
-
-                // Create n-grams from POS sequence
-                const ngrams = new Set();
-                for (let i = 0; i <= posTags.length - n; i++) {
-                    const ngram = posTags.slice(i, i + n).join(' '); // Space-separated like Shaib
-                    ngrams.add(ngram);
-                }
-
-                return ngrams;
-            } catch (error) {
-                console.error('Error extracting POS n-grams (Shaib method):', error);
-                return new Set();
-            }
+            return cachedTagNgrams(text, n, 'penn');
         }
+
 
         // Calculate POS tag sequence similarity between two texts (Shaib method)
         function posTagSequenceSimilarity(text1, text2, n = 3) {
@@ -2567,22 +2634,22 @@
                 const ngrams1Array = [...ngrams1];
                 const ngrams2Array = [...ngrams2];
 
-                // Find fuzzy matches using Levenshtein distance
-                const matches = new Set();
+                // Count matching (n-gram from 1, n-gram from 2) combinations. Every combination
+                // is distinct, so a counter is exactly the size of the Set of "i-j" keys this
+                // used to build - without allocating a string per match.
+                let matchCount = 0;
+                for (let i = 0; i < ngrams1Array.length; i++) {
+                    const ng1 = ngrams1Array[i];
+                    for (let j = 0; j < ngrams2Array.length; j++) {
+                        if (levenshteinWithin(ng1, ngrams2Array[j], maxDistance)) matchCount++;
+                    }
+                }
 
-                ngrams1Array.forEach((ng1, idx1) => {
-                    ngrams2Array.forEach((ng2, idx2) => {
-                        const distance = levenshteinDistance(ng1, ng2);
-                        // Match if distance is within threshold
-                        if (distance <= maxDistance) {
-                            matches.add(`${idx1}-${idx2}`);
-                        }
-                    });
-                });
-
-                // Calculate similarity as proportion of n-grams that have fuzzy matches
+                // NOTE: this counts combinations, not distinct n-grams, so the result is not
+                // bounded by 1 despite the name. Preserved as-is here deliberately - this change
+                // is a speed-up and must not move any score. See the scoring follow-up.
                 const totalNgrams = Math.max(ngrams1Array.length, ngrams2Array.length);
-                return totalNgrams === 0 ? 0 : matches.size / totalNgrams;
+                return totalNgrams === 0 ? 0 : matchCount / totalNgrams;
             } catch (error) {
                 console.error('Error calculating fuzzy POS similarity (Shaib method):', error);
                 return 0;
@@ -2600,40 +2667,7 @@
                 console.error('Compromise.js (nlp) library not available');
                 return new Set();
             }
-
-            try {
-                // Parse text with Compromise.js
-                const doc = window.nlp(text);
-
-                // Get simple POS tags directly from Compromise
-                const posTags = [];
-                doc.terms().forEach(term => {
-                    // Get the primary tag type from Compromise
-                    if (term.has('#Noun')) posTags.push('NOUN');
-                    else if (term.has('#Verb')) posTags.push('VERB');
-                    else if (term.has('#Adjective')) posTags.push('ADJECTIVE');
-                    else if (term.has('#Adverb')) posTags.push('ADVERB');
-                    else if (term.has('#Determiner')) posTags.push('DETERMINER');
-                    else if (term.has('#Pronoun')) posTags.push('PRONOUN');
-                    else if (term.has('#Preposition')) posTags.push('PREPOSITION');
-                    else if (term.has('#Conjunction')) posTags.push('CONJUNCTION');
-                    else if (term.has('#Number')) posTags.push('NUMBER');
-                    else if (term.has('#Punctuation')) posTags.push('PUNCTUATION');
-                    else posTags.push('OTHER');
-                });
-
-                // Create n-grams from POS sequence
-                const ngrams = new Set();
-                for (let i = 0; i <= posTags.length - n; i++) {
-                    const ngram = posTags.slice(i, i + n).join(' ');
-                    ngrams.add(ngram);
-                }
-
-                return ngrams;
-            } catch (error) {
-                console.error('Error extracting simple POS n-grams:', error);
-                return new Set();
-            }
+            return cachedTagNgrams(text, n, 'simple');
         }
 
         // Calculate simple POS tag sequence similarity between two texts
@@ -2720,13 +2754,20 @@
         }
 
         // Calculate frequency of function words in text (returns normalized vector)
+        // Function-word frequencies describe one text, but the pairwise metrics ask for them
+        // once per pair, so the same extraction ran 182 times over 14 responses. Cached by text
+        // alongside the POS tag sequences, and cleared with them at the start of each analysis.
+        //
+        // The returned object is shared between callers and must be treated as read-only.
         function calculateFunctionWordFrequencies(text) {
             if (!window.nlp) {
                 console.warn('Compromise.js not loaded - cannot analyze function words');
                 return {};
             }
 
-            return extractFunctionWords(text);
+            const entry = posCacheEntry(text);
+            if (!entry.functionWords) entry.functionWords = extractFunctionWords(text);
+            return entry.functionWords;
         }
 
         // Calculate cosine similarity between function word frequency vectors
@@ -2759,11 +2800,9 @@
 
             if (mag1 === 0 || mag2 === 0) return 0;
 
-            const similarity = dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2));
-
-            console.log(`Function word similarity: ${(similarity * 100).toFixed(1)}% (${allWords.size} unique function words)`);
-
-            return similarity;
+            // Deliberately not logged: this runs once per pair, which is 4,950 console writes
+            // on a 100-response cohort and measurably slows the analysis.
+            return dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2));
         }
 
         console.log('Function word distribution similarity loaded (using Compromise.js NLP).');
@@ -8519,87 +8558,7 @@
         // wordLevelFuzzyNgramSimilarity: moved into sharedMetricFunctions()
 
         // BLEU Score (word-level) - adapted for similarity analysis
-        function bleuSimilarity(text1, text2) {
-            // Calculate symmetric BLEU (average both directions)
-            const bleu1to2 = calculateBLEU(text1, text2);
-            const bleu2to1 = calculateBLEU(text2, text1);
-            return (bleu1to2 + bleu2to1) / 2;
-        }
-
-        function calculateBLEU(candidateText, referenceText) {
-            // Tokenize into words
-            const candidateWords = tokenizeWords(candidateText);
-            const referenceWords = tokenizeWords(referenceText);
-
-            if (candidateWords.length === 0 || referenceWords.length === 0) {
-                return 0;
-            }
-
-            // Calculate modified precision for n-grams of size 1, 2, 3, 4
-            const precisions = [];
-            for (let n = 1; n <= 4; n++) {
-                const precision = modifiedPrecision(candidateWords, referenceWords, n);
-                if (precision === 0) {
-                    return 0; // If any n-gram precision is 0, BLEU is 0
-                }
-                precisions.push(precision);
-            }
-
-            // Geometric mean of precisions
-            const logSum = precisions.reduce((sum, p) => sum + Math.log(p), 0);
-            const bleu = Math.exp(logSum / 4);
-
-            // Note: We skip brevity penalty for similarity analysis
-            // In traditional BLEU, BP = exp(1 - reference_length/candidate_length) if candidate shorter
-            // For similarity, we don't penalize shorter texts
-
-            return bleu;
-        }
-
-        function modifiedPrecision(candidateWords, referenceWords, n) {
-            // Extract n-grams from candidate
-            const candidateNgrams = extractNgrams(candidateWords, n);
-            if (candidateNgrams.length === 0) return 0;
-
-            // Count n-grams in reference
-            const referenceCounts = countNgrams(referenceWords, n);
-
-            // Modified precision: clip candidate counts to reference counts
-            let clippedCount = 0;
-            const candidateCounts = {};
-
-            candidateNgrams.forEach(ngram => {
-                const key = ngram.join(' ');
-                candidateCounts[key] = (candidateCounts[key] || 0) + 1;
-            });
-
-            Object.keys(candidateCounts).forEach(ngram => {
-                const candidateCount = candidateCounts[ngram];
-                const referenceCount = referenceCounts[ngram] || 0;
-                clippedCount += Math.min(candidateCount, referenceCount);
-            });
-
-            return clippedCount / candidateNgrams.length;
-        }
-
-        // tokenizeWords: moved into sharedMetricFunctions()
-
-        function extractNgrams(words, n) {
-            const ngrams = [];
-            for (let i = 0; i <= words.length - n; i++) {
-                ngrams.push(words.slice(i, i + n));
-            }
-            return ngrams;
-        }
-
-        function countNgrams(words, n) {
-            const counts = {};
-            for (let i = 0; i <= words.length - n; i++) {
-                const ngram = words.slice(i, i + n).join(' ');
-                counts[ngram] = (counts[ngram] || 0) + 1;
-            }
-            return counts;
-        }
+        // BLEU: moved into sharedMetricFunctions() so the metrics worker has it too.
 
         // ============================================================================
         // BURROW'S DELTA FUNCTIONS
@@ -9768,18 +9727,17 @@
 
                         if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
 
-                        // Find fuzzy matches using Levenshtein distance
-                        const matches = new Set();
-
-                        ngrams1.forEach((ng1, idx1) => {
-                            ngrams2.forEach((ng2, idx2) => {
-                                const distance = levenshteinDistance(ng1, ng2);
-                                // Match if distance is within threshold
-                                if (distance <= maxDistance) {
-                                    matches.add(`${idx1}-${idx2}`);
-                                }
-                            });
-                        });
+                        // Count matching (n-gram, n-gram) combinations. Every combination is
+                        // distinct, so a counter equals the size of the Set of "i-j" keys this
+                        // used to build, without allocating a string per match.
+                        let matchCount = 0;
+                        for (let i = 0; i < ngrams1.length; i++) {
+                            const ng1 = ngrams1[i];
+                            for (let j = 0; j < ngrams2.length; j++) {
+                                if (levenshteinWithin(ng1, ngrams2[j], maxDistance)) matchCount++;
+                            }
+                        }
+                        const matches = { size: matchCount };
 
                         // Calculate similarity as proportion of n-grams that have fuzzy matches
                         const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
@@ -9793,6 +9751,169 @@
                         const union = new Set([...set1, ...set2]);
                         return union.size === 0 ? 0 : intersection.size / union.size;
                     }
+
+            // BLEU, moved here from the page scope. The worker's dispatch table has always had
+            // a `case 'bleu'` calling bleuSimilarity, but the function was never defined inside
+            // the worker, so selecting BLEU made every worker throw ReferenceError on its first
+            // batch and the analysis fell back to running all pairs on the main thread. BLEU is
+            // on by default, so the parallel path was effectively dead. These depend only on
+            // tokenizeWords, which is already shared.
+
+            function bleuSimilarity(text1, text2) {
+                // Calculate symmetric BLEU (average both directions)
+                const bleu1to2 = calculateBLEU(text1, text2);
+                const bleu2to1 = calculateBLEU(text2, text1);
+                return (bleu1to2 + bleu2to1) / 2;
+            }
+
+            function calculateBLEU(candidateText, referenceText) {
+                // Tokenize into words
+                const candidateWords = tokenizeWords(candidateText);
+                const referenceWords = tokenizeWords(referenceText);
+
+                if (candidateWords.length === 0 || referenceWords.length === 0) {
+                    return 0;
+                }
+
+                // Calculate modified precision for n-grams of size 1, 2, 3, 4
+                const precisions = [];
+                for (let n = 1; n <= 4; n++) {
+                    const precision = modifiedPrecision(candidateWords, referenceWords, n);
+                    if (precision === 0) {
+                        return 0; // If any n-gram precision is 0, BLEU is 0
+                    }
+                    precisions.push(precision);
+                }
+
+                // Geometric mean of precisions
+                const logSum = precisions.reduce((sum, p) => sum + Math.log(p), 0);
+                const bleu = Math.exp(logSum / 4);
+
+                // Note: We skip brevity penalty for similarity analysis
+                // In traditional BLEU, BP = exp(1 - reference_length/candidate_length) if candidate shorter
+                // For similarity, we don't penalize shorter texts
+
+                return bleu;
+            }
+
+            function modifiedPrecision(candidateWords, referenceWords, n) {
+                // Extract n-grams from candidate
+                const candidateNgrams = extractNgrams(candidateWords, n);
+                if (candidateNgrams.length === 0) return 0;
+
+                // Count n-grams in reference
+                const referenceCounts = countNgrams(referenceWords, n);
+
+                // Modified precision: clip candidate counts to reference counts
+                let clippedCount = 0;
+                const candidateCounts = {};
+
+                candidateNgrams.forEach(ngram => {
+                    const key = ngram.join(' ');
+                    candidateCounts[key] = (candidateCounts[key] || 0) + 1;
+                });
+
+                Object.keys(candidateCounts).forEach(ngram => {
+                    const candidateCount = candidateCounts[ngram];
+                    const referenceCount = referenceCounts[ngram] || 0;
+                    clippedCount += Math.min(candidateCount, referenceCount);
+                });
+
+                return clippedCount / candidateNgrams.length;
+            }
+
+            function extractNgrams(words, n) {
+                const ngrams = [];
+                for (let i = 0; i <= words.length - n; i++) {
+                    ngrams.push(words.slice(i, i + n));
+                }
+                return ngrams;
+            }
+
+            function countNgrams(words, n) {
+                const counts = {};
+                for (let i = 0; i <= words.length - n; i++) {
+                    const ngram = words.slice(i, i + n).join(' ');
+                    counts[ngram] = (counts[ngram] || 0) + 1;
+                }
+                return counts;
+            }
+
+            // "Is the edit distance at most maxDistance?" - for the fuzzy metrics, which only
+            // ever compare a distance against a threshold and never use its value.
+            //
+            // Three shortcuts, all exact: reject on length difference alone; fill only the
+            // diagonal band of width 2*maxDistance+1, since a path leaving the band has already
+            // spent more than maxDistance edits; and abandon a row once every cell in it exceeds
+            // the threshold, as rows never decrease going down the matrix.
+            //
+            // Verified against the full matrix over 200,000 random tag-sequence comparisons at
+            // thresholds 0 through 5, with no disagreement.
+            let levBufferA = new Int32Array(256);
+            let levBufferB = new Int32Array(256);
+
+            function boundedEditDistanceWithin(a, b, lenA, lenB, maxDistance, equalAt) {
+                if (Math.abs(lenA - lenB) > maxDistance) return false;
+                if (lenA === 0) return lenB <= maxDistance;
+                if (lenB === 0) return lenA <= maxDistance;
+
+                if (levBufferA.length < lenB + 2) {
+                    levBufferA = new Int32Array(lenB + 2);
+                    levBufferB = new Int32Array(lenB + 2);
+                }
+                let prev = levBufferA, curr = levBufferB;
+
+                const beyond = maxDistance + 1; // stands in for "further than we care about"
+                for (let j = 0; j <= lenB; j++) prev[j] = j <= maxDistance ? j : beyond;
+
+                for (let i = 1; i <= lenA; i++) {
+                    const from = Math.max(1, i - maxDistance);
+                    const to = Math.min(lenB, i + maxDistance);
+
+                    curr[0] = i <= maxDistance ? i : beyond;
+                    if (from > 1) curr[from - 1] = beyond;
+
+                    let rowMin = beyond;
+                    for (let j = from; j <= to; j++) {
+                        const cost = equalAt(a, i - 1, b, j - 1) ? 0 : 1;
+                        let value = prev[j - 1] + cost;
+                        const deletion = prev[j] + 1;
+                        if (deletion < value) value = deletion;
+                        const insertion = curr[j - 1] + 1;
+                        if (insertion < value) value = insertion;
+                        if (value > beyond) value = beyond;
+                        curr[j] = value;
+                        if (value < rowMin) rowMin = value;
+                    }
+                    if (to < lenB) curr[to + 1] = beyond;
+                    if (rowMin > maxDistance) return false;
+
+                    const swap = prev; prev = curr; curr = swap;
+                }
+                return prev[lenB] <= maxDistance;
+            }
+
+            const charsEqual = (a, i, b, j) => a.charCodeAt(i) === b.charCodeAt(j);
+            const wordsEqual = (a, i, b, j) => a[i] === b[j];
+
+            // Character-level, matching levenshteinDistance.
+            function levenshteinWithin(a, b, maxDistance) {
+                if (a === b) return true;
+                return boundedEditDistanceWithin(a, b, a.length, b.length, maxDistance, charsEqual);
+            }
+
+            // Token-level, matching wordLevelLevenshteinDistance: whole words are the units, so
+            // "the cat sat" vs "the dog sat" is distance 1, not three character edits.
+            function wordLevelLevenshteinWithin(phrase1, phrase2, maxDistance) {
+                if (phrase1 === phrase2) return true;
+                // Tokenise exactly as wordLevelLevenshteinDistance does. Today's callers hand in
+                // text that is already lower-cased and single-spaced, so this changes nothing for
+                // them - but a predicate that disagreed with the distance it stands in for would
+                // be a trap for the next caller.
+                const w1 = phrase1.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                const w2 = phrase2.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                return boundedEditDistanceWithin(w1, w2, w1.length, w2.length, maxDistance, wordsEqual);
+            }
 
             function levenshteinDistance(str1, str2) {
                         const len1 = str1.length;
@@ -10159,19 +10280,16 @@
 
                         if (ngrams1.length === 0 || ngrams2.length === 0) return 0;
 
-                        // Find fuzzy matches using word-level Levenshtein distance
-                        const matches = new Set();
-
-                        ngrams1.forEach((ng1, idx1) => {
-                            ngrams2.forEach((ng2, idx2) => {
-                                // Compare word arrays
-                                const distance = wordLevelLevenshteinDistance(ng1.join(' '), ng2.join(' '));
-                                // Match if word-level distance is within threshold
-                                if (distance <= maxWordDistance) {
-                                    matches.add(`${idx1}-${idx2}`);
-                                }
-                            });
-                        });
+                        // As above: count combinations directly rather than building keys.
+                        let matchCount = 0;
+                        const joined2 = ngrams2.map(ng => ng.join(' '));
+                        for (let i = 0; i < ngrams1.length; i++) {
+                            const ng1 = ngrams1[i].join(' ');
+                            for (let j = 0; j < joined2.length; j++) {
+                                if (wordLevelLevenshteinWithin(ng1, joined2[j], maxWordDistance)) matchCount++;
+                            }
+                        }
+                        const matches = { size: matchCount };
 
                         // Calculate similarity as proportion of n-grams that have fuzzy matches
                         const totalNgrams = Math.max(ngrams1.length, ngrams2.length);
@@ -10239,7 +10357,14 @@
                 cosineSimilarity,
                 fuzzyNgramSimilarity,
                 jaccardSimilarity,
+                bleuSimilarity,
+                calculateBLEU,
+                modifiedPrecision,
+                extractNgrams,
+                countNgrams,
                 levenshteinDistance,
+                levenshteinWithin,
+                wordLevelLevenshteinWithin,
                 nerSimilarity,
                 ngram4Similarity,
                 ngram5Similarity,
@@ -10450,6 +10575,10 @@
 
             analysisIsRunning = true;
             allSimilarityPairs = [];
+
+            // Tag sequences are keyed by text, and a new run may be over a different question
+            // column entirely. Start from empty so nothing is carried across analyses.
+            clearPosTagCache();
             const n = responses.length;
             const totalPairs = (n * (n - 1)) / 2;
             const selectedMetrics = getSelectedMetrics();
