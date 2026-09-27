@@ -12363,26 +12363,33 @@
                         return;
                     }
 
-                    // Find all pairs involving this respondent
+                    // Find all pairs involving this respondent.
+                    //
+                    // The threshold is in standard deviations above the cohort baseline and has
+                    // to be compared against adjustedScore, the same field the pair list filters
+                    // on. Comparing it against the raw similarity - which is a proportion, so
+                    // never above 1 - matched nothing at the default of 2.0 SD, and the early
+                    // return below then hid the spinner and left the screen unchanged.
                     const threshold = parseFloat(document.getElementById('similarityThreshold').value);
                     currentRespondentMatches = allSimilarityPairs
                         .filter(p => {
                             const involvesRespondent = (p.id1 === respondentId || p.id2 === respondentId);
                             // For least flagged, show all pairs; for most flagged, respect threshold
-                            return involvesRespondent && (ignoreThreshold || p.similarity >= threshold);
+                            return involvesRespondent && (ignoreThreshold || (p.adjustedScore ?? 0) >= threshold);
                         })
                         .map(p => {
                             // Normalize so currentRespondent is always the first one
-                            if (p.id1 === respondentId) {
-                                return { id: p.id2, text: p.text2, similarity: p.similarity };
-                            } else {
-                                return { id: p.id1, text: p.text1, similarity: p.similarity };
-                            }
+                            const other = p.id1 === respondentId
+                                ? { id: p.id2, text: p.text2 }
+                                : { id: p.id1, text: p.text1 };
+                            return { ...other, similarity: p.similarity, adjustedScore: p.adjustedScore ?? 0 };
                         })
                         .sort((a, b) => {
                             // Least flagged: sort lowest to highest (to match list order)
                             // Most flagged: sort highest to lowest
-                            return ignoreThreshold ? a.similarity - b.similarity : b.similarity - a.similarity;
+                            return ignoreThreshold
+                                ? a.adjustedScore - b.adjustedScore
+                                : b.adjustedScore - a.adjustedScore;
                         });
 
                     if (currentRespondentMatches.length === 0) {
@@ -12412,8 +12419,10 @@
             const match = currentRespondentMatches[currentMatchIndex];
             const sharedPhrases = getCommonNgrams(currentRespondent.text, match.text);
 
-            const scoreClass = match.similarity >= 0.85 ? 'similarity-high' :
-                               match.similarity >= 0.70 ? 'similarity-medium' : 'similarity-low';
+            // Same breakpoints the pair list uses, so a badge means the same thing in both places.
+            const matchAdjusted = match.adjustedScore ?? 0;
+            const scoreClass = matchAdjusted >= 3 ? 'similarity-high' :
+                               matchAdjusted >= 2 ? 'similarity-medium' : 'similarity-low';
 
             // Highlight shared phrases
             const highlighted1 = highlightSharedPhrases(currentRespondent.text, sharedPhrases);
