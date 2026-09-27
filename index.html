@@ -969,6 +969,13 @@
                     <select id="columnSelect"></select>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
+                    <label style="font-weight: 600; white-space: nowrap;"
+                           title="A column marking known-AI texts (1/true/yes). Flagged rows are shown separately on the map and every other response is measured against them.">
+                        Reference Column:
+                    </label>
+                    <select id="referenceColumnSelect"></select>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
                     <label style="font-weight: 600; white-space: nowrap;">
                         Threshold: <span id="thresholdDisplay" style="color: #e74c3c;">0.60</span>
                     </label>
@@ -2152,6 +2159,7 @@
                             <div id="visualizationContent">
                                 <canvas id="similarityScatterPlot" width="900" height="600" style="max-width: 100%; border: 1px solid #e0e0e0; border-radius: 5px; cursor: crosshair;"></canvas>
                                 <div id="visualizationStats" style="margin-top: 15px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;"></div>
+                                <div id="referenceReport" style="margin-top: 5px;"></div>
                             </div>
                         </div>
                     </div>
@@ -2750,6 +2758,7 @@
         let csvData = [];
         let headers = [];
         let currentColumn = 0;
+        let referenceColumn = -1; // CSV column flagging known-AI reference texts; -1 = none
         let analysisResults = {};
         let responses = []; // Global responses array
         let analysisIsRunning = false;
@@ -2838,6 +2847,7 @@
                 localStorage.setItem('homogeneityAnalyzer_csvData', JSON.stringify(csvData));
                 localStorage.setItem('homogeneityAnalyzer_headers', JSON.stringify(headers));
                 localStorage.setItem('homogeneityAnalyzer_currentColumn', currentColumn.toString());
+                localStorage.setItem('homogeneityAnalyzer_referenceColumn', referenceColumn.toString());
                 localStorage.setItem('homogeneityAnalyzer_threshold', document.getElementById('similarityThreshold')?.value || '0.60');
                 localStorage.setItem('homogeneityAnalyzer_metricVersion', METRIC_VERSION.toString());
 
@@ -2904,6 +2914,7 @@
                 const savedCsvData = localStorage.getItem('homogeneityAnalyzer_csvData');
                 const savedHeaders = localStorage.getItem('homogeneityAnalyzer_headers');
                 const savedColumn = localStorage.getItem('homogeneityAnalyzer_currentColumn');
+                const savedReferenceColumn = localStorage.getItem('homogeneityAnalyzer_referenceColumn');
                 const savedThreshold = localStorage.getItem('homogeneityAnalyzer_threshold');
 
                 if (savedCsvData && savedHeaders) {
@@ -2924,6 +2935,14 @@
                             select.appendChild(option);
                         }
                     });
+
+                    // Restore the reference column, falling back to header detection for
+                    // sessions saved before this setting existed.
+                    referenceColumn = savedReferenceColumn !== null
+                        ? parseInt(savedReferenceColumn)
+                        : detectReferenceColumn(headers);
+                    if (isNaN(referenceColumn)) referenceColumn = -1;
+                    populateReferenceColumnSelect();
 
                     // Restore threshold
                     if (savedThreshold) {
@@ -2984,7 +3003,11 @@
                             console.log('✓ Restored', allSimilarityPairs.length, 'similarity pairs');
                         }
 
-                        console.log('✓ Restored', responses.length, 'responses');
+                        // Saved responses may predate reference flags, or have been saved under a
+                        // different column - re-derive them from csvData either way.
+                        const restoredReferenceCount = applyReferenceFlags();
+                        console.log('✓ Restored', responses.length, 'responses',
+                                    restoredReferenceCount > 0 ? `(${restoredReferenceCount} reference texts)` : '');
 
                         // Update display with restored data
                         updateThreshold(savedThreshold || '0.40');
@@ -3048,6 +3071,7 @@
                 localStorage.removeItem('homogeneityAnalyzer_csvData');
                 localStorage.removeItem('homogeneityAnalyzer_headers');
                 localStorage.removeItem('homogeneityAnalyzer_currentColumn');
+                localStorage.removeItem('homogeneityAnalyzer_referenceColumn');
                 localStorage.removeItem('homogeneityAnalyzer_threshold');
                 localStorage.removeItem('homogeneityAnalyzer_analysisResults');
                 localStorage.removeItem('homogeneityAnalyzer_similarityPairs');
@@ -3106,7 +3130,198 @@
                 await analyzeCorpus();
                 saveSession();
             });
+            document.getElementById('referenceColumnSelect').addEventListener('change', async (e) => {
+                referenceColumn = parseInt(e.target.value);
+                // Flags only affect how results are grouped and reported, not the pairwise
+                // metrics themselves, so re-tag the responses and redraw without recomputing.
+                applyReferenceFlags();
+                if (allSimilarityPairs.length > 0) {
+                    renderSimilarityVisualization();
+                }
+                saveSession();
+            });
         });
+
+        // ========== REFERENCE TEXTS ==========
+        // A reference is a text whose origin is already known - typically generated by the
+        // model under study. Flagging them turns a purely relative measurement into one with
+        // a fixed point: instead of only asking which two students resemble each other, the
+        // tool can also ask how close each student sits to a known machine-written text.
+
+        // Header names that plausibly mark a reference flag column.
+        const REFERENCE_HEADER_PATTERN = /^\s*(is[\s_-]*)?(ai[\s_-]*)?(reference|ref)s?\s*$|^\s*ai[\s_-]*generated\s*$|^\s*is[\s_-]*ai\s*$/i;
+
+        // Cell values counted as "this row is a reference".
+        const REFERENCE_TRUTHY_VALUES = new Set(['1', 'true', 'yes', 'y', 't', 'x', 'ref', 'reference',
+                                                 'ai', 'ai-generated', 'ai_generated', 'aigenerated']);
+
+        function isReferenceValue(value) {
+            if (value === undefined || value === null) return false;
+            return REFERENCE_TRUTHY_VALUES.has(String(value).trim().toLowerCase());
+        }
+
+        // Pick a reference column automatically when a header looks like one. Returns -1 if
+        // nothing matches, which leaves the tool behaving exactly as it did before.
+        function detectReferenceColumn(headerRow) {
+            if (!Array.isArray(headerRow)) return -1;
+            for (let i = 1; i < headerRow.length; i++) {
+                if (REFERENCE_HEADER_PATTERN.test(String(headerRow[i] || ''))) return i;
+            }
+            return -1;
+        }
+
+        function populateReferenceColumnSelect() {
+            const select = document.getElementById('referenceColumnSelect');
+            if (!select) return;
+
+            select.innerHTML = '';
+            const none = document.createElement('option');
+            none.value = '-1';
+            none.textContent = 'None';
+            select.appendChild(none);
+
+            headers.forEach((header, i) => {
+                if (i > 0 && header.trim()) {
+                    const option = document.createElement('option');
+                    option.value = String(i);
+                    option.textContent = header.length > 40 ? header.substring(0, 40) + '...' : header;
+                    select.appendChild(option);
+                }
+            });
+
+            select.value = String(referenceColumn);
+        }
+
+        // How many rows the current reference column actually flags. Used to warn when a
+        // column is selected but marks nothing - usually a value-format mismatch.
+        function countFlaggedRows() {
+            if (referenceColumn < 0) return 0;
+            return csvData.filter(row => isReferenceValue(row[referenceColumn])).length;
+        }
+
+        // Re-derive isReference on the live responses from the current column. Called after a
+        // restore (a session saved before this feature existed has no flags at all) and when
+        // the column selection changes, so the flags can never drift from csvData.
+        function applyReferenceFlags() {
+            if (responses.length === 0) return 0;
+
+            const flaggedById = new Map();
+            csvData.forEach(row => {
+                flaggedById.set(String(row[0]), referenceColumn >= 0 && isReferenceValue(row[referenceColumn]));
+            });
+
+            responses.forEach(r => {
+                r.isReference = flaggedById.get(String(r.id)) === true;
+            });
+
+            return responses.filter(r => r.isReference).length;
+        }
+
+        function getReferences() {
+            return responses.filter(r => r.isReference);
+        }
+
+        // For each non-reference response, the reference it most resembles. Similarities come
+        // straight from allSimilarityPairs, so this reflects whatever metric weighting is
+        // currently configured rather than recomputing anything.
+        function buildNearestReferenceReport() {
+            const references = getReferences();
+            if (references.length === 0) return [];
+
+            const referenceIds = new Set(references.map(r => r.id));
+            const best = new Map(); // response id -> { referenceId, similarity }
+
+            allSimilarityPairs.forEach(pair => {
+                const oneIsReference = referenceIds.has(pair.id1);
+                const otherIsReference = referenceIds.has(pair.id2);
+                if (oneIsReference === otherIsReference) return; // skip ref-ref and student-student
+
+                const studentId = oneIsReference ? pair.id2 : pair.id1;
+                const referenceId = oneIsReference ? pair.id1 : pair.id2;
+                const current = best.get(studentId);
+                if (!current || pair.similarity > current.similarity) {
+                    best.set(studentId, { referenceId, similarity: pair.similarity });
+                }
+            });
+
+            return responses
+                .filter(r => !r.isReference && best.has(r.id))
+                .map(r => ({
+                    id: r.id,
+                    referenceId: best.get(r.id).referenceId,
+                    similarity: best.get(r.id).similarity
+                }))
+                .sort((a, b) => b.similarity - a.similarity);
+        }
+
+        function renderReferenceReport() {
+            const container = document.getElementById('referenceReport');
+            if (!container) return;
+
+            const references = getReferences();
+
+            if (referenceColumn < 0) {
+                container.innerHTML = `
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #ccc; font-size: 13px; color: #666;">
+                        <strong>No reference column selected.</strong> If your CSV marks known-AI texts in a
+                        column (values like <code>1</code>, <code>true</code> or <code>yes</code>), pick it in
+                        <em>Reference Column</em> above. Each response is then measured against those texts,
+                        which catches a single student working alone - something pairwise comparison cannot see.
+                    </div>`;
+                return;
+            }
+
+            if (references.length === 0) {
+                container.innerHTML = `
+                    <div style="background: #fef5e7; padding: 15px; border-radius: 5px; border-left: 4px solid #f39c12; font-size: 13px; color: #7d6608;">
+                        <strong>Column "${escapeHtml(headers[referenceColumn] || '')}" flags no rows.</strong>
+                        Recognised values are 1, true, yes, y, t, x, ref, reference, ai. Rows whose text column
+                        is empty are dropped before analysis, so a flagged row with no response will not appear.
+                    </div>`;
+                return;
+            }
+
+            const report = buildNearestReferenceReport();
+            if (report.length === 0) {
+                container.innerHTML = `
+                    <div style="background: #fef5e7; padding: 15px; border-radius: 5px; border-left: 4px solid #f39c12; font-size: 13px; color: #7d6608;">
+                        ${references.length} reference text${references.length === 1 ? '' : 's'} flagged, but no
+                        comparisons against them were found. Re-run the analysis to populate them.
+                    </div>`;
+                return;
+            }
+
+            const rows = report.map((entry, i) => `
+                <tr style="border-bottom: 1px solid #eee; ${i < 5 ? 'background: #fffaf3;' : ''}">
+                    <td style="padding: 8px 10px; font-weight: ${i < 5 ? '600' : '400'};">${escapeHtml(String(entry.id))}</td>
+                    <td style="padding: 8px 10px; color: #666;">${escapeHtml(String(entry.referenceId))}</td>
+                    <td style="padding: 8px 10px; text-align: right; font-variant-numeric: tabular-nums;">${(entry.similarity * 100).toFixed(1)}%</td>
+                </tr>`).join('');
+
+            container.innerHTML = `
+                <h4 style="margin: 20px 0 8px 0; color: #57068C;">
+                    Closest reference text, per response
+                </h4>
+                <p style="margin: 0 0 10px 0; font-size: 13px; color: #666;">
+                    ${references.length} reference text${references.length === 1 ? '' : 's'} flagged
+                    (${escapeHtml(headers[referenceColumn] || '')}). Sorted by similarity, so the responses
+                    sitting closest to a known machine-written text are at the top. This is a ranking, not a
+                    verdict: a high value says a response resembles that reference on the selected metrics,
+                    which a shared prompt alone can produce.
+                </p>
+                <div style="max-height: 320px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 5px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <thead>
+                            <tr style="background: #f8f9fa; position: sticky; top: 0;">
+                                <th style="padding: 10px; text-align: left;">Response</th>
+                                <th style="padding: 10px; text-align: left;">Nearest reference</th>
+                                <th style="padding: 10px; text-align: right;">Similarity</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>`;
+        }
 
         function handleFileUpload(e) {
             const file = e.target.files[0];
@@ -3145,6 +3360,11 @@
             });
 
             currentColumn = 1;
+            referenceColumn = detectReferenceColumn(headers);
+            populateReferenceColumnSelect();
+            if (referenceColumn >= 0) {
+                console.log(`Reference column detected: "${headers[referenceColumn]}" (${countFlaggedRows()} rows flagged)`);
+            }
 
             // Hide welcome/upload screens and show app interface
             document.getElementById('welcomeScreen').style.display = 'none';
@@ -3207,8 +3427,10 @@
             // Update global responses array
             responses = csvData.map(row => ({
                 id: row[0],
-                text: row[currentColumn] || ''
+                text: row[currentColumn] || '',
+                isReference: false
             })).filter(r => r.text.trim());
+            applyReferenceFlags();
 
             if (responses.length === 0) return;
 
@@ -11652,6 +11874,7 @@
 
                     // Update stats
                     updateVisualizationStats(coordinates);
+                    renderReferenceReport();
 
                     // Hide loading, show content
                     loading.style.display = 'none';
@@ -11716,22 +11939,99 @@
                 y: scaleY(coord.y),
                 id: responses[i].id,
                 text: responses[i].text,
+                isReference: !!responses[i].isReference,
                 index: i
             }));
 
-            // Draw all points
-            window.visualizationPoints.forEach(point => {
+            // Draw responses first, then references on top so a reference is never hidden
+            // underneath a cluster of responses.
+            const responsePoints = window.visualizationPoints.filter(p => !p.isReference);
+            const referencePoints = window.visualizationPoints.filter(p => p.isReference);
+
+            responsePoints.forEach(point => {
                 ctx.beginPath();
                 ctx.arc(point.x, point.y, 6, 0, 2 * Math.PI);
-                ctx.fillStyle = '#57068C';
+                ctx.fillStyle = REFERENCE_PLOT_COLORS.response;
                 ctx.fill();
                 ctx.strokeStyle = 'white';
                 ctx.lineWidth = 2;
                 ctx.stroke();
             });
 
+            // References are drawn as diamonds as well as recoloured, so they stay
+            // distinguishable without relying on colour vision.
+            referencePoints.forEach(point => {
+                drawDiamond(ctx, point.x, point.y, 9);
+                ctx.fillStyle = REFERENCE_PLOT_COLORS.reference;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            if (referencePoints.length > 0) {
+                drawPlotLegend(ctx, width, padding, responsePoints.length, referencePoints.length);
+            }
+
             // Add interactivity
             addVisualizationInteractivity(canvas);
+        }
+
+        const REFERENCE_PLOT_COLORS = {
+            response: '#57068C',   // NYU purple
+            reference: '#00838F'   // teal - distinct from both the purple and the orange selection ring
+        };
+
+        function drawDiamond(ctx, cx, cy, radius) {
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - radius);
+            ctx.lineTo(cx + radius, cy);
+            ctx.lineTo(cx, cy + radius);
+            ctx.lineTo(cx - radius, cy);
+            ctx.closePath();
+        }
+
+        function drawPlotLegend(ctx, width, padding, responseCount, referenceCount) {
+            const entries = [
+                { label: `Responses (${responseCount})`, color: REFERENCE_PLOT_COLORS.response, shape: 'circle' },
+                { label: `Reference texts (${referenceCount})`, color: REFERENCE_PLOT_COLORS.reference, shape: 'diamond' }
+            ];
+            // Sit the legend in the unused strip above the plot area. Points are scaled into
+            // [padding, height - padding], so keeping the box entirely above `padding` means it
+            // can never hide a response - or a reference - underneath itself.
+            const boxWidth = 170;
+            const boxHeight = 14 + entries.length * 20;
+            const x = width - padding - boxWidth;
+            const y = Math.max(2, padding - boxHeight - 4);
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+            ctx.strokeStyle = '#e0e0e0';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.rect(x, y, boxWidth, boxHeight);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.textAlign = 'left';
+            ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+            entries.forEach((entry, i) => {
+                const cy = y + 18 + i * 20;
+                if (entry.shape === 'diamond') {
+                    drawDiamond(ctx, x + 16, cy, 6);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(x + 16, cy, 5, 0, 2 * Math.PI);
+                }
+                ctx.fillStyle = entry.color;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                ctx.fillStyle = '#444';
+                ctx.fillText(entry.label, x + 30, cy + 4);
+            });
+            ctx.textAlign = 'center';
         }
 
         // Add hover and click interactions to canvas
@@ -11820,13 +12120,33 @@
         function showVisualizationPointDetails(point) {
             const statsDiv = document.getElementById('visualizationStats');
             const preview = point.text.substring(0, 200) + (point.text.length > 200 ? '...' : '');
+            const accent = point.isReference ? REFERENCE_PLOT_COLORS.reference : '#57068C';
+
+            // For a response, surface how close it sits to the nearest reference text; for a
+            // reference, say so plainly so it is not mistaken for a student submission.
+            let referenceLine = '';
+            if (point.isReference) {
+                referenceLine = `
+                    <p style="margin: 10px 0 0 0; font-size: 12px; color: ${accent}; font-weight: 600;">
+                        This is a flagged reference text, not a response.
+                    </p>`;
+            } else {
+                const nearest = buildNearestReferenceReport().find(entry => entry.id === point.id);
+                if (nearest) {
+                    referenceLine = `
+                        <p style="margin: 10px 0 0 0; font-size: 12px; color: #555;">
+                            Nearest reference: <strong>${escapeHtml(String(nearest.referenceId))}</strong>
+                            at ${(nearest.similarity * 100).toFixed(1)}% on the selected metrics.
+                        </p>`;
+                }
+            }
 
             statsDiv.innerHTML = `
-                <div style="background: #f0f7ff; padding: 15px; border-radius: 5px; border-left: 4px solid #57068C;">
-                    <h4 style="margin: 0 0 10px 0; color: #57068C;">Selected: Response ${point.id}</h4>
+                <div style="background: #f0f7ff; padding: 15px; border-radius: 5px; border-left: 4px solid ${accent};">
+                    <h4 style="margin: 0 0 10px 0; color: ${accent};">Selected: ${point.isReference ? 'Reference' : 'Response'} ${point.id}</h4>
                     <p style="margin: 0; font-size: 13px; color: #666; line-height: 1.6;">
                         ${escapeHtml(preview)}
-                    </p>
+                    </p>${referenceLine}
                     <p style="margin: 10px 0 0 0; font-size: 12px; color: #888;">
                         <em>Click another point to compare, or check the "Similar Pairs" tab to see this response's matches.</em>
                     </p>
@@ -11840,6 +12160,7 @@
 
             // Calculate some basic stats
             const numPoints = coordinates.length;
+            const referenceCount = getReferences().length;
             const avgSimilarity = allSimilarityPairs.reduce((sum, p) => sum + p.similarity, 0) / allSimilarityPairs.length;
 
             statsDiv.innerHTML = `
@@ -11855,6 +12176,11 @@
                     <div style="font-size: 13px; color: #666; margin-bottom: 5px;">Comparisons Made</div>
                     <div style="font-size: 28px; font-weight: bold; color: #57068C;">${allSimilarityPairs.length.toLocaleString()}</div>
                 </div>
+                ${referenceCount > 0 ? `
+                <div style="background: #e0f2f1; padding: 15px; border-radius: 5px; text-align: center;">
+                    <div style="font-size: 13px; color: #666; margin-bottom: 5px;">Reference Texts</div>
+                    <div style="font-size: 28px; font-weight: bold; color: ${REFERENCE_PLOT_COLORS.reference};">${referenceCount}</div>
+                </div>` : ''}
             `;
         }
 
