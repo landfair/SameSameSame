@@ -2151,6 +2151,7 @@
                         <span class="panel-info" id="pairCountDisplay">0 pairs above threshold</span>
                     </div>
                     <div class="panel-content">
+                        <div id="inertMetricNotice" style="display: none; margin: 0 0 12px 0; padding: 10px 12px; background: #fef5e7; border-left: 4px solid #f39c12; border-radius: 4px; font-size: 13px; color: #7d6608;"></div>
                         <div id="similarityPairsList">
                             <p style="color: #999; text-align: center; padding: 40px;">
                                 Upload a file to see similarity analysis
@@ -2905,7 +2906,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 8; // Increment this when adding new metrics (v8 = chunked, cohort-centred embeddings)
+        const METRIC_VERSION = 9; // Increment this when adding new metrics (v9 = metrics with no spread no longer drag the raw mean)
 
         // ========== HEADER MENU ==========
 
@@ -11913,11 +11914,38 @@
 
             const weights = getMetricWeights();
             const combinedScores = [];
+
+            // A metric with no spread across the cohort gives every pair the same answer, so it
+            // distinguishes nobody. It was already excluded from the standardised score, but not
+            // from the raw mean, where it contributed its full weight to the denominator and a
+            // constant to the numerator - dragging every pair's raw similarity toward that
+            // constant in proportion to how heavily the metric was weighted.
+            //
+            // That mattered most when a metric failed rather than genuinely tied. Perplexity
+            // posts to a local service that most installations do not run, and returns 0 on
+            // error; selecting it without the service running therefore pulled every raw
+            // similarity down by its whole weight, with nothing on screen to say so. The same
+            // went for any POS metric when Compromise had not loaded.
+            //
+            // Excluding such a metric from both figures fixes all of those cases at once,
+            // without having to tell a genuine failure from a genuine tie at each of the dozen
+            // places a metric can fall back to zero.
+            const inertMetrics = selectedMetrics.filter(metric => {
+                const params = metricAdjustmentParams[metric];
+                return !params || !params.scale;
+            });
+            const contributingMetrics = selectedMetrics.filter(m => !inertMetrics.includes(m));
+
+            if (inertMetrics.length > 0) {
+                console.warn(`[COMBINE] ${inertMetrics.length} selected metric(s) gave every pair the same value and were excluded: ${inertMetrics.join(', ')}`);
+            }
+            window.lastInertMetrics = inertMetrics;
+
             pairMetrics.forEach(pair => {
                 let weightedZ = 0, zWeight = 0;
                 let weightedRaw = 0, rawWeight = 0;
 
-                selectedMetrics.forEach(metric => {
+                contributingMetrics.forEach(metric => {
                     const raw = pair.metrics[metric];
                     if (raw === undefined || raw === null || isNaN(raw)) return;
                     const weight = weights[metric] || 1.0;
@@ -11927,10 +11955,7 @@
                     weightedRaw += raw * weight;
                     rawWeight += weight;
 
-                    // A metric with no spread across the cohort separates nobody, so it is left
-                    // out of the standardised score rather than contributing a constant.
                     const params = metricAdjustmentParams[metric];
-                    if (!params || !params.scale) return;
                     const adjusted = adjustedMetricValue(metric, pair, responseIndex);
                     if (adjusted === null) return;
                     weightedZ += ((adjusted - params.center) / params.scale) * weight;
@@ -12001,7 +12026,48 @@
             saveSession();
         }
 
+        // Name any selected metric that gave every pair the same value, so a metric silently
+        // sitting out - usually a failed one - is visible rather than just quietly absent.
+        const METRIC_DISPLAY_NAMES = {
+            cosine: 'Cosine', jaccard: 'Jaccard', ngram: 'Character 3-gram',
+            ngramPunctuation: 'Character 3-gram with punctuation', ngram4: 'Character 4-gram',
+            ngram5: 'Character 5-gram', wordNgram: 'Word 3-gram', sentenceVariance: 'Sentence length variance',
+            wordCount: 'Word count', avgSentenceLength: 'Average sentence length',
+            temporalBurstiness: 'Temporal burstiness', pronounDensity: 'Pronoun density',
+            transitionWords: 'Transition words', ner: 'Named entities',
+            fuzzyNgram3: 'Fuzzy 3-word phrases', fuzzyNgram6: 'Fuzzy 6-word phrases',
+            wordLevelFuzzy3: 'Word-level fuzzy 3-gram', wordLevelFuzzy5: 'Word-level fuzzy 5-gram',
+            bleu: 'BLEU', burrowsDelta: "Burrows' Delta", burrowsDeltaTopicAgnostic: "Burrows' Delta (topic-agnostic)",
+            functionWordCosine: 'Function-word cosine', pureFunctionWordCosine: 'Pure function-word cosine',
+            functionWordCharNgram: 'Function-word character n-grams', ttr: 'Type-token ratio',
+            mattr: 'Moving-average TTR', perplexity: 'Perplexity fingerprint',
+            transformerSemantic: 'Semantic similarity', posSyntactic: 'POS 3-gram',
+            shaib4: 'Shaib 4-gram', shaib5: 'Shaib 5-gram', shaib6: 'Shaib 6-gram',
+            shaib6lev1: 'Shaib 6-gram (fuzzy 1)', shaib6lev2: 'Shaib 6-gram (fuzzy 2)',
+            shaib6lev3: 'Shaib 6-gram (fuzzy 3)', simplePOS: 'Simple syntactic pattern',
+            functionWordDist: 'Function-word distribution', rareNgram: 'Shared rare phrases'
+        };
+
+        function renderInertMetricNotice() {
+            const notice = document.getElementById('inertMetricNotice');
+            if (!notice) return;
+
+            const inert = window.lastInertMetrics || [];
+            if (inert.length === 0) { notice.style.display = 'none'; return; }
+
+            const names = inert.map(id => (METRIC_DISPLAY_NAMES[id] || id));
+            notice.style.display = 'block';
+            notice.innerHTML = `
+                <strong>${inert.length} selected metric${inert.length === 1 ? '' : 's'} did not contribute:</strong>
+                ${names.map(n => escapeHtml(n)).join(', ')}.
+                Each returned the same value for every pair, so it separates nothing and was left out of
+                both scores rather than shifting them all by a constant. A metric that needs something
+                external - Perplexity needs its local service, the syntactic metrics need the NLP library -
+                will look like this when that piece is missing.`;
+        }
+
         function renderSimilarityPairs(pairs) {
+            renderInertMetricNotice();
             const container = document.getElementById('similarityPairsList');
 
             if (pairs.length === 0) {
