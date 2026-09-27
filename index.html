@@ -1621,6 +1621,63 @@
                             </div>
                         </div>
 
+                        <!-- Chatbot Register -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; background: #fafafa;">
+                            <input type="checkbox" id="metric_registerMarkers" checked onchange="toggleMetricWeight('registerMarkers')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Chatbot Register</strong>
+                                <div style="font-size: 12px; color: #666;">Rate of vocabulary and phrasing overrepresented in chatbot prose (delve, underscore, pivotal), z-scored against the class</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_registerMarkers" min="0.1" max="5.0" step="0.1" value="2.0"
+                                       style="flex: 1;" oninput="updateWeightDisplay('registerMarkers', this.value)">
+                                <span id="weightDisplay_registerMarkers" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.0</span>
+                            </div>
+                        </div>
+                        <!-- Punctuation Profile -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; background: #fafafa;">
+                            <input type="checkbox" id="metric_punctuationProfile" checked onchange="toggleMetricWeight('punctuationProfile')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Punctuation Profile</strong>
+                                <div style="font-size: 12px; color: #666;">Rates of commas, semicolons, dashes, colons and more, z-scored against the class</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_punctuationProfile" min="0.1" max="5.0" step="0.1" value="1.5"
+                                       style="flex: 1;" oninput="updateWeightDisplay('punctuationProfile', this.value)">
+                                <span id="weightDisplay_punctuationProfile" style="min-width: 35px; font-weight: 600; font-size: 13px;">1.5</span>
+                            </div>
+                        </div>
+                        <!-- Which Transitions -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; background: #fafafa;">
+                            <input type="checkbox" id="metric_transitionChoice" checked onchange="toggleMetricWeight('transitionChoice')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Which Transitions</strong>
+                                <div style="font-size: 12px; color: #666;">The particular transitions each response uses, weighted by rarity - not how many it uses</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_transitionChoice" min="0.1" max="5.0" step="0.1" value="2.0"
+                                       style="flex: 1;" oninput="updateWeightDisplay('transitionChoice', this.value)">
+                                <span id="weightDisplay_transitionChoice" style="min-width: 35px; font-weight: 600; font-size: 13px;">2.0</span>
+                            </div>
+                        </div>
+                        <!-- Sentence Openers -->
+                        <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; background: #fafafa;">
+                            <input type="checkbox" id="metric_sentenceOpeners" checked onchange="toggleMetricWeight('sentenceOpeners')">
+                            <div style="flex: 1; margin-left: 10px;">
+                                <strong>Sentence Openers</strong>
+                                <div style="font-size: 12px; color: #666;">How sentences begin: first words and first pairs, weighted by rarity</div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 220px;">
+                                <label style="font-size: 12px; color: #666; min-width: 60px;">Weight:</label>
+                                <input type="range" id="weight_sentenceOpeners" min="0.1" max="5.0" step="0.1" value="1.5"
+                                       style="flex: 1;" oninput="updateWeightDisplay('sentenceOpeners', this.value)">
+                                <span id="weightDisplay_sentenceOpeners" style="min-width: 35px; font-weight: 600; font-size: 13px;">1.5</span>
+                            </div>
+                        </div>
+
                         <!-- Shared Rare Phrases -->
                         <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
                             <input type="checkbox" id="metric_rareNgram" checked onchange="toggleMetricWeight('rareNgram')">
@@ -2553,7 +2610,8 @@
             // the cache is thrashing anyway. Clearing beats tracking recency here.
             if (posTagCache.size >= POS_CACHE_LIMIT) posTagCache.clear();
 
-            entry = { penn: null, simple: null, functionWords: null, rareNgrams: null, ngrams: new Map() };
+            entry = { penn: null, simple: null, functionWords: null, rareNgrams: null,
+                      styleProfile: null, ngrams: new Map() };
             posTagCache.set(text, entry);
             return entry;
         }
@@ -2936,7 +2994,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 11; // Increment this when adding new metrics (v11 = every response gets a unique id)
+        const METRIC_VERSION = 12; // Increment this when adding new metrics (v12 = chatbot register, punctuation, transitions, openers)
 
         // ========== HEADER MENU ==========
 
@@ -4031,6 +4089,18 @@
                         // analysis fills the real value in afterwards.
                         metrics.rareNgram = sharedRareNgramSimilarity(text1, text2);
                         break;
+                    case 'registerMarkers':
+                        metrics.registerMarkers = registerSimilarity(text1, text2);
+                        break;
+                    case 'punctuationProfile':
+                        metrics.punctuationProfile = punctuationSimilarity(text1, text2);
+                        break;
+                    case 'transitionChoice':
+                        metrics.transitionChoice = transitionChoiceSimilarity(text1, text2);
+                        break;
+                    case 'sentenceOpeners':
+                        metrics.sentenceOpeners = sentenceOpenerSimilarity(text1, text2);
+                        break;
                     case 'burrowsDeltaTopicAgnostic':
                         metrics.burrowsDeltaTopicAgnostic = calculateTopicAgnosticBurrowsDelta(text1, text2);
                         break;
@@ -4155,7 +4225,8 @@
             const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
                               'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
                               'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
-                              'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram'];
+                              'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
             return metricIds.filter(id => {
                 const checkbox = document.getElementById('metric_' + id);
                 return checkbox && checkbox.checked;
@@ -4267,7 +4338,8 @@
             const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount', 'avgSentenceLength',
                               'temporalBurstiness', 'pronounDensity', 'transitionWords', 'ngramPunctuation', 'wordNgram',
                               'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5',
-                              'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram'];
+                              'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
 
             metricIds.forEach(id => {
                 const slider = document.getElementById(`weight_${id}`);
@@ -4308,7 +4380,8 @@
                 const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
                                   'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
                                   'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
-                                  'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram'];
+                                  'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
                 metricIds.forEach(id => {
                     const checkbox = document.getElementById('metric_' + id);
                     if (checkbox) {
@@ -4474,6 +4547,18 @@
                     case 'rareNgram':
                         metricValues['Shared Rare Phrases'] = sharedRareNgramSimilarity(text1, text2);
                         break;
+                    case 'registerMarkers':
+                        metricValues['Chatbot Register'] = registerSimilarity(text1, text2);
+                        break;
+                    case 'punctuationProfile':
+                        metricValues['Punctuation Profile'] = punctuationSimilarity(text1, text2);
+                        break;
+                    case 'transitionChoice':
+                        metricValues['Which Transitions'] = transitionChoiceSimilarity(text1, text2);
+                        break;
+                    case 'sentenceOpeners':
+                        metricValues['Sentence Openers'] = sentenceOpenerSimilarity(text1, text2);
+                        break;
                 }
             }
 
@@ -4516,7 +4601,11 @@
                 'shaib6lev3': 'Shaib 6-gram (Lev 3)',
                 'simplePOS': 'Simple Syntactic Pattern',
                 'functionWordDist': 'Function Word Dist',
-                'rareNgram': 'Shared Rare Phrases'
+                'rareNgram': 'Shared Rare Phrases',
+                'registerMarkers': 'Chatbot Register',
+                'punctuationProfile': 'Punctuation Profile',
+                'transitionChoice': 'Which Transitions',
+                'sentenceOpeners': 'Sentence Openers'
             };
 
             const metricTooltips = {
@@ -8911,6 +9000,244 @@
         }
 
         // ============================================================================
+        // STYLE PROFILES
+        // ============================================================================
+        //
+        // Four ways two writers can resemble each other without sharing a word of content.
+        // Each builds a per-response profile, cached with the other per-text work, and compares
+        // two profiles into a bounded similarity.
+        //
+        // Two comparison shapes are used, following the same reasoning as the rest of the tool.
+        // Where a feature has a fixed vocabulary and a meaningful rate - function words,
+        // punctuation - each dimension is z-scored against the cohort before the cosine is
+        // taken, so a response is described by how it departs from this class rather than by
+        // raw frequency. That is Cosine Delta, and it is what makes the measure about style
+        // rather than about length. Where the vocabulary is open and what matters is which
+        // items appear at all - transitions, sentence openers - the comparison is a TF-IDF
+        // cosine, so a transition every response uses counts for almost nothing while an
+        // unusual one counts for a lot.
+
+        // Vocabulary and phrasing overrepresented in chatbot prose. Drawn from published
+        // excess-vocabulary work (Kobak et al. 2024) and common tells.
+        //
+        // This list drifts as models change, which is a real limitation: a marker list tuned to
+        // last year's models will quietly stop firing. Flagged reference essays are the defence,
+        // since they show whether this family is still separating anything for the current
+        // generation - and the weight fitting will push it toward zero when it is not.
+        const REGISTER_MARKERS = [
+            'delve', 'delves', 'delving', 'underscore', 'underscores', 'underscored', 'underscoring',
+            'showcase', 'showcases', 'showcasing', 'pivotal', 'intricate', 'intricacies', 'multifaceted',
+            'tapestry', 'testament', 'realm', 'landscape', 'navigate', 'navigating', 'navigates',
+            'foster', 'fosters', 'fostering', 'crucial', 'comprehensive', 'meticulous', 'meticulously',
+            'notably', 'noteworthy', 'commendable', 'embark', 'embarking', 'garner', 'bolster', 'elevate',
+            'resonate', 'resonates', 'vibrant', 'nuanced', 'profound', 'seamless', 'seamlessly',
+            'transformative', 'invaluable', 'paramount', 'ever-evolving', 'interplay', 'unwavering',
+            'myriad', 'holistic', 'leverage', 'leveraging', 'insightful',
+            'shed light', 'a testament to', 'it is important to note', 'it is worth noting',
+            'plays a crucial role', 'plays a vital role', "in today's world", "in today's society",
+            'in an era', 'serves as a', 'stands as a', 'a deeper understanding', 'rich tapestry',
+            'in essence', 'at its core', 'the power of', 'a reminder that', 'navigating the complexities'
+        ];
+
+        const TRANSITION_PHRASES = [
+            'furthermore', 'moreover', 'additionally', 'in addition', 'also', 'besides', 'as well as',
+            'for example', 'for instance', 'specifically', 'to illustrate', 'namely', 'in other words',
+            'in particular', 'such as', 'however', 'nevertheless', 'nonetheless', 'conversely',
+            'on the other hand', 'in contrast', 'yet', 'still', 'although', 'even though', 'despite',
+            'regardless', 'alternatively', 'instead', 'meanwhile', 'therefore', 'thus', 'consequently',
+            'as a result', 'accordingly', 'hence', 'for this reason', 'subsequently', 'finally',
+            'first', 'firstly', 'second', 'secondly', 'third', 'thirdly', 'then', 'next', 'lastly',
+            'eventually', 'ultimately', 'initially', 'in conclusion', 'to conclude', 'to sum up',
+            'in summary', 'overall', 'all in all', 'in the end', 'in essence', 'indeed', 'in fact',
+            'certainly', 'notably', 'importantly', 'significantly', 'similarly', 'likewise',
+            'in the same way', 'by comparison', 'after all', 'of course', 'plus', 'that said',
+            'at the same time', 'in turn', 'above all'
+        ];
+
+        const PUNCTUATION_FEATURES = [
+            { id: 'comma', label: 'commas', re: /,/g },
+            { id: 'semicolon', label: 'semicolons', re: /;/g },
+            { id: 'colon', label: 'colons', re: /:(?!\d)/g },
+            { id: 'dash', label: 'em dashes', re: /—|–|\s--\s/g },
+            { id: 'paren', label: 'parentheses', re: /\(/g },
+            { id: 'question', label: 'question marks', re: /\?/g },
+            { id: 'exclaim', label: 'exclamation marks', re: /!/g },
+            { id: 'quote', label: 'quotation marks', re: /"|\u201C|\u201D/g },
+            { id: 'ellipsis', label: 'ellipses', re: /\.\.\.|…/g },
+            { id: 'hyphen', label: 'hyphenated words', re: /[A-Za-z]-[A-Za-z]/g },
+            { id: 'apostrophe', label: 'apostrophes', re: /'|\u2019/g }
+        ];
+
+        // Cohort statistics for the fixed-vocabulary profiles, rebuilt per analysis.
+        let styleProfileStats = null;
+
+        function styleProfileFor(text) {
+            const entry = posCacheEntry(text);
+            if (entry.styleProfile) return entry.styleProfile;
+
+            const lower = String(text).toLowerCase();
+            const words = lower.replace(/[^\w\s'-]/g, ' ').split(/\s+/).filter(Boolean);
+            const wordCount = Math.max(1, words.length);
+            const per1000 = (n) => (n / wordCount) * 1000;
+
+            // Which register markers appear, as counts.
+            //
+            // Deliberately a presence map rather than a rate vector z-scored against the class.
+            // Measured on a set where no student used any marker and the references used several:
+            // z-scoring gave every marker-free response the same vector, so two students who had
+            // written nothing chatbot-like scored 1.000 against each other while the actual
+            // chatbot pairs scored 0.628. Sharing an absence is not evidence of a shared source -
+            // it is just two people writing normally - and treating it as evidence inverted the
+            // metric. Comparing which markers are present gives marker-free pairs a score of 0,
+            // which is the honest answer.
+            const wordSet = new Map();
+            words.forEach(w => wordSet.set(w, (wordSet.get(w) || 0) + 1));
+            const register = new Map();
+            REGISTER_MARKERS.forEach(marker => {
+                let count;
+                if (marker.includes(' ')) {
+                    count = 0;
+                    let from = 0;
+                    while (true) {
+                        const at = lower.indexOf(marker, from);
+                        if (at === -1) break;
+                        count++; from = at + marker.length;
+                    }
+                } else {
+                    count = wordSet.get(marker) || 0;
+                }
+                if (count > 0) register.set(marker, count);
+            });
+
+            // Which transitions, as counts. Not how many - the review's point is that density
+            // throws away the distinguishing information. "Furthermore / Moreover / Ultimately"
+            // and "also / but / so" can share a density and share nothing else.
+            const transitions = new Map();
+            TRANSITION_PHRASES.forEach(t => {
+                let count = 0, from = 0;
+                const needle = t.includes(' ') ? t : null;
+                if (needle) {
+                    while (true) {
+                        const at = lower.indexOf(needle, from);
+                        if (at === -1) break;
+                        count++; from = at + needle.length;
+                    }
+                } else {
+                    count = wordSet.get(t) || 0;
+                }
+                if (count > 0) transitions.set(t, count);
+            });
+
+            // How sentences begin: the first word, and the first two when the second is short.
+            const openers = new Map();
+            (String(text).match(/[^.!?]+[.!?]*/g) || []).forEach(sentence => {
+                const w = sentence.trim().toLowerCase().replace(/[^\w\s'-]/g, ' ').split(/\s+/).filter(Boolean);
+                if (!w.length) return;
+                openers.set('w:' + w[0], (openers.get('w:' + w[0]) || 0) + 1);
+                if (w[1]) {
+                    const pair = 'w2:' + w[0] + ' ' + w[1];
+                    openers.set(pair, (openers.get(pair) || 0) + 1);
+                }
+            });
+
+            const punctuation = PUNCTUATION_FEATURES.map(f => per1000((String(text).match(f.re) || []).length));
+
+            entry.styleProfile = { register, transitions, openers, punctuation, wordCount };
+            return entry.styleProfile;
+        }
+
+        // Mean and spread of each dimension across the cohort, plus document frequencies for the
+        // open-vocabulary profiles.
+        function buildStyleProfileStats(texts) {
+            const profiles = texts.map(styleProfileFor);
+            if (!profiles.length) return null;
+
+            const columnStats = (pick) => {
+                const dim = pick(profiles[0]).length;
+                const mean = new Float64Array(dim), sd = new Float64Array(dim);
+                profiles.forEach(p => { const v = pick(p); for (let k = 0; k < dim; k++) mean[k] += v[k]; });
+                for (let k = 0; k < dim; k++) mean[k] /= profiles.length;
+                profiles.forEach(p => { const v = pick(p); for (let k = 0; k < dim; k++) sd[k] += (v[k] - mean[k]) ** 2; });
+                for (let k = 0; k < dim; k++) sd[k] = Math.sqrt(sd[k] / profiles.length);
+                return { mean, sd };
+            };
+
+            const documentFrequency = (pick) => {
+                const df = new Map();
+                profiles.forEach(p => { pick(p).forEach((_, key) => df.set(key, (df.get(key) || 0) + 1)); });
+                return df;
+            };
+
+            return {
+                total: profiles.length,
+                punctuation: columnStats(p => p.punctuation),
+                registerDf: documentFrequency(p => p.register),
+                transitionDf: documentFrequency(p => p.transitions),
+                openerDf: documentFrequency(p => p.openers)
+            };
+        }
+
+        // Cosine over cohort-z-scored vectors, mapped onto [0,1]. Z-scoring makes this a measure
+        // of shared departure from the class rather than of shared raw rates - two responses
+        // both using commas at the class average should not look alike for it.
+        function zScoredCosine(vecA, vecB, stats) {
+            if (!stats) return 0;
+            const { mean, sd } = stats;
+            let dot = 0, na = 0, nb = 0;
+            for (let k = 0; k < mean.length; k++) {
+                if (!(sd[k] > 1e-12)) continue;
+                const a = (vecA[k] - mean[k]) / sd[k];
+                const b = (vecB[k] - mean[k]) / sd[k];
+                dot += a * b; na += a * a; nb += b * b;
+            }
+            if (na === 0 || nb === 0) return 0.5; // no variation to speak of: neutral
+            const cos = dot / (Math.sqrt(na) * Math.sqrt(nb));
+            return Math.min(1, Math.max(0, (1 + cos) / 2));
+        }
+
+        // TF-IDF cosine over two count maps: shared items count in proportion to how rare they
+        // are in this cohort, so "however" shared by everyone barely registers.
+        function idfWeightedCosine(mapA, mapB, df, total) {
+            if (!mapA.size || !mapB.size) return 0;
+            const weight = (key) => Math.log((total + 1) / ((df.get(key) || 0) + 1)) + 1;
+
+            let dot = 0, na = 0, nb = 0;
+            mapA.forEach((countA, key) => {
+                const w = weight(key), a = countA * w;
+                na += a * a;
+                const countB = mapB.get(key);
+                if (countB) dot += a * (countB * w);
+            });
+            mapB.forEach((countB, key) => { const b = countB * weight(key); nb += b * b; });
+            if (na === 0 || nb === 0) return 0;
+            return Math.min(1, Math.max(0, dot / (Math.sqrt(na) * Math.sqrt(nb))));
+        }
+
+        function registerSimilarity(text1, text2) {
+            if (!styleProfileStats) return 0;
+            return idfWeightedCosine(styleProfileFor(text1).register, styleProfileFor(text2).register,
+                                     styleProfileStats.registerDf, styleProfileStats.total);
+        }
+
+        function punctuationSimilarity(text1, text2) {
+            if (!styleProfileStats) return 0;
+            return zScoredCosine(styleProfileFor(text1).punctuation, styleProfileFor(text2).punctuation,
+                                 styleProfileStats.punctuation);
+        }
+
+        function transitionChoiceSimilarity(text1, text2) {
+            if (!styleProfileStats) return 0;
+            return idfWeightedCosine(styleProfileFor(text1).transitions, styleProfileFor(text2).transitions,
+                                     styleProfileStats.transitionDf, styleProfileStats.total);
+        }
+
+        function sentenceOpenerSimilarity(text1, text2) {
+            if (!styleProfileStats) return 0;
+            return idfWeightedCosine(styleProfileFor(text1).openers, styleProfileFor(text2).openers,
+                                     styleProfileStats.openerDf, styleProfileStats.total);
+        }
+
+        // ============================================================================
         // METRIC FAMILIES
         // ============================================================================
         //
@@ -8954,7 +9281,8 @@
                 metrics: ['functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram',
                           'functionWordDist', 'burrowsDelta', 'burrowsDeltaTopicAgnostic',
                           'ngram', 'ngram4', 'ngram5', 'ngramPunctuation',
-                          'transitionWords', 'pronounDensity', 'perplexity']
+                          'transitionWords', 'pronounDensity', 'perplexity',
+                          'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners']
             },
             {
                 id: 'surface', label: 'Surface statistics', defaultWeight: 0.3,
@@ -11521,6 +11849,23 @@
                 rareNgramIndex = null;
             }
 
+            // PHASE 0d: Cohort statistics for the style profiles (if any are selected)
+            const styleMetrics = ['registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners'];
+            if (styleMetrics.some(m => selectedMetrics.includes(m))) {
+                updateProgress(0, totalPairs, 'Phase 0d: Profiling writing style across the cohort...', 'Measuring what is ordinary here...');
+                await sleep(10);
+
+                styleProfileStats = buildStyleProfileStats(responses.map(r => r.text));
+
+                if (styleProfileStats) {
+                    updateProgress(0, totalPairs, 'Phase 0d: Style profiles complete',
+                        `${styleProfileStats.registerDf.size} register markers, ${styleProfileStats.transitionDf.size} transitions, ${styleProfileStats.openerDf.size} sentence openers in use`);
+                    await sleep(300);
+                }
+            } else {
+                styleProfileStats = null;
+            }
+
             // PHASE 1: Calculate all individual metrics using Web Workers (parallel)
             updateProgress(0, totalPairs, 'Phase 1: Calculating individual metrics (parallel)...', 'Initializing workers...');
             await sleep(10);
@@ -12241,6 +12586,47 @@
                 }
             }
 
+            // PHASE 1.95: Style profiles (if selected)
+            // Main thread, like the rare phrases: these compare against cohort-wide statistics.
+            if (styleProfileStats && styleMetrics.some(m => selectedMetrics.includes(m))) {
+                const scorers = {
+                    registerMarkers: registerSimilarity,
+                    punctuationProfile: punctuationSimilarity,
+                    transitionChoice: transitionChoiceSimilarity,
+                    sentenceOpeners: sentenceOpenerSimilarity
+                };
+                const active = styleMetrics.filter(m => selectedMetrics.includes(m));
+
+                updateProgress(0, pairMetrics.length, 'Comparing writing style...', 'Register, punctuation, transitions and openers...');
+                await sleep(0);
+
+                for (let i = 0; i < pairMetrics.length; i++) {
+                    if (cancelRequested) {
+                        hideProgress();
+                        analysisIsRunning = false;
+                        cancelRequested = false;
+                        alert('Analysis cancelled by user.');
+                        return;
+                    }
+
+                    const pair = pairMetrics[i];
+                    active.forEach(metric => {
+                        try {
+                            pair.metrics[metric] = scorers[metric](pair.text1, pair.text2);
+                        } catch (error) {
+                            console.error(`Error calculating ${metric} for pair:`, error);
+                        }
+                    });
+
+                    if (i % 100 === 0 || i === pairMetrics.length - 1) {
+                        updateProgress(i + 1, pairMetrics.length,
+                            `Comparing writing style... (${i + 1}/${pairMetrics.length})`,
+                            'Register, punctuation, transitions and openers...');
+                        await sleep(0);
+                    }
+                }
+            }
+
             // PHASE 2: Per-metric cohort statistics for double-centering and standardisation.
             //
             // Replaces min-max normalization, under which a single extreme pair set the scale
@@ -12488,7 +12874,9 @@
             shaib4: 'Shaib 4-gram', shaib5: 'Shaib 5-gram', shaib6: 'Shaib 6-gram',
             shaib6lev1: 'Shaib 6-gram (fuzzy 1)', shaib6lev2: 'Shaib 6-gram (fuzzy 2)',
             shaib6lev3: 'Shaib 6-gram (fuzzy 3)', simplePOS: 'Simple syntactic pattern',
-            functionWordDist: 'Function-word distribution', rareNgram: 'Shared rare phrases'
+            functionWordDist: 'Function-word distribution', rareNgram: 'Shared rare phrases',
+            registerMarkers: 'Chatbot register', punctuationProfile: 'Punctuation profile',
+            transitionChoice: 'Which transitions', sentenceOpeners: 'Sentence openers'
         };
 
         function renderInertMetricNotice() {
