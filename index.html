@@ -3099,7 +3099,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 16; // Increment this when adding new metrics (v16 = families score on selected measures, by weighted median of percentiles)
+        const METRIC_VERSION = 17; // Increment this when adding new metrics (v17 = pairs ranked by combined evidence across families, not by averaging them)
 
         // ========== HEADER MENU ==========
 
@@ -10044,6 +10044,44 @@
         // Both are answerable from the cohort's own data, and neither needs a distributional
         // assumption that has not been checked.
 
+        // Where a value sits among the others, counting ties as half. Used instead of a z-score
+        // wherever a position has to be combined across families: z-scores presume a shape these
+        // distributions do not have, and a rank presumes nothing.
+        function midRankIn(sorted, value) {
+            const n = sorted.length;
+            if (!n) return 0.5;
+            let lo = 0, hi = n;
+            while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < value) lo = mid + 1; else hi = mid; }
+            const below = lo;
+            let lo2 = lo; hi = n;
+            while (lo2 < hi) { const mid = (lo2 + hi) >> 1; if (sorted[mid] <= value) lo2 = mid + 1; else hi = mid; }
+            return (below + lo2) / (2 * n);
+        }
+
+        // How much evidence one family's position carries, on a scale where several moderate
+        // agreements outweigh one spectacular outlier.
+        //
+        // This is the arithmetic behind the whole approach. Being unusually alike in ONE way is
+        // weak: in a cohort of any size somebody has to come top of every measure, and Phase 4
+        // showed that the top pair of both test corpora sits exactly where chance predicts. Being
+        // unusually alike in SEVERAL INDEPENDENT ways at once is the thing that does not happen by
+        // accident, and an average cannot see it - a mean reaches the same number whether one
+        // family is enormous or four are moderately raised, and those are entirely different
+        // evidentiary situations.
+        //
+        // Taking -ln(1 - rank) per family and summing is Fisher's combination: evidence adds where
+        // probabilities multiply. A pair at the 90th percentile on all six families scores 13.8; a
+        // pair at the 99.9th on one and the 50th on the rest scores 10.4, despite holding the more
+        // spectacular single number. That ordering is the point.
+        //
+        // Note this deliberately does NOT correct for the families being correlated. Phase 1
+        // measures that separately, and the correction happens where it belongs: the null in
+        // Phase 4 is built from this cohort's own pairs, which already contain whatever innocent
+        // coupling exists between families.
+        function familyEvidenceFromRank(rank) {
+            return -Math.log(Math.max(1e-9, 1 - rank));
+        }
+
         // Normal tail probability (Zelen & Severo), accurate to about 1e-7. Used only to show how
         // far a normal reading of a deviation is from what this cohort actually contains.
         function normalTailProbability(z) {
@@ -10133,6 +10171,45 @@
                 ? anchor.normalOneIn / anchor.observedOneIn : null;
 
             return { pairs: scores.length, model, calibration, anchor, overstatement };
+        }
+
+        // How often does a pair stand out on several families at once in this cohort?
+        //
+        // Because each family's position is a RANK, exactly 5% of pairs sit above the 95th
+        // percentile on any one family by construction. So if the families were independent, the
+        // number standing out on k of them at once would follow a binomial, and the gap between
+        // that and what is observed measures how far the families are from independent.
+        //
+        // That gap is a property of the measures, not evidence about anybody. It belongs in the
+        // report so a conjunction count can be read for what it is worth: where families move
+        // together, "alike in four ways" is a good deal less surprising than it sounds.
+        function conjunctionProfile() {
+            const pairs = (typeof allSimilarityPairs !== 'undefined') ? allSimilarityPairs : [];
+            if (pairs.length < 20) return null;
+
+            const familyIds = METRIC_FAMILIES.map(f => f.id)
+                .filter(id => pairs.some(p => p.familyRank && isFinite(p.familyRank[id])));
+            if (familyIds.length < 2) return null;
+
+            const F = familyIds.length;
+            const mark = 0.95;
+            const counts = new Array(F + 1).fill(0);
+            pairs.forEach(p => {
+                let k = 0;
+                familyIds.forEach(id => { if (((p.familyRank && p.familyRank[id]) || 0) >= mark) k++; });
+                counts[k]++;
+            });
+
+            const tailFrom = (arr) => arr.map((_, k) => arr.slice(k).reduce((s, v) => s + v, 0));
+            const choose = (n, k) => { let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return r; };
+            const q = 1 - mark;
+            const independent = counts.map((_, k) =>
+                pairs.length * choose(F, k) * Math.pow(q, k) * Math.pow(1 - q, F - k));
+
+            return {
+                pairs: pairs.length, families: familyIds, F, mark,
+                counts, atOrAbove: tailFrom(counts), independentAtOrAbove: tailFrom(independent)
+            };
         }
 
         // Recomputed only when the scores actually change - the sort is the expensive part, and
@@ -11044,18 +11121,18 @@
         // per-family values do not depend on the family weights, changing a weight needs no
         // re-analysis at all - the expensive work is already done.
         function rescoreFromFamilyWeights() {
-            if (!allSimilarityPairs.length || !allSimilarityPairs[0].familyZ) return false;
+            if (!allSimilarityPairs.length || !allSimilarityPairs[0].familyEvidence) return false;
 
             const weights = getFamilyWeights();
             const combined = allSimilarityPairs.map(pair => {
-                let z = 0, w = 0;
-                Object.entries(pair.familyZ || {}).forEach(([family, value]) => {
+                let evidence = 0, w = 0;
+                Object.entries(pair.familyEvidence || {}).forEach(([family, value]) => {
                     const fw = weights[family] ?? 0;
                     if (fw <= 0 || !isFinite(value)) return;
-                    z += value * fw;
+                    evidence += value * fw;
                     w += fw;
                 });
-                return w > 0 ? z / w : 0;
+                return w > 0 ? evidence / w : 0;
             });
 
             const scale = robustScale(combined);
@@ -14635,23 +14712,45 @@
                 familyScale[f] = robustScale(familyRaw[f].filter(v => !isNaN(v)));
             });
 
+            // Each family's values in order, so a pair's position within its own family can be
+            // read off by rank rather than by assuming a shape.
+            const familySorted = {};
+            activeFamilies.forEach(f => {
+                familySorted[f] = familyRaw[f].filter(v => !isNaN(v)).sort((a, b) => a - b);
+            });
+            // Capped short of 1 so the topmost pair still yields a finite evidence term.
+            const rankCap = 1 - 1 / (2 * Math.max(2, pairMetrics.length));
+            // What counts as "unusually alike in this way" when the count is stated in words.
+            const CONJUNCTION_MARK = 0.95;
+
             pairMetrics.forEach((pair, idx) => {
-                let weightedZ = 0, zWeight = 0;
+                let weightedEvidence = 0, evidenceWeight = 0;
                 pair.familyZ = {};
+                pair.familyRank = {};
+                pair.familyEvidence = {};
+                const standoutFamilies = [];
 
                 activeFamilies.forEach(f => {
                     const value = familyRaw[f][idx];
+                    if (isNaN(value)) return;
+
                     const scale = familyScale[f];
-                    if (isNaN(value) || !scale || !scale.scale) return;
-                    const z = (value - scale.center) / scale.scale;
-                    pair.familyZ[f] = z;
+                    if (scale && scale.scale) pair.familyZ[f] = (value - scale.center) / scale.scale;
+
+                    const rank = Math.min(rankCap, midRankIn(familySorted[f], value));
+                    pair.familyRank[f] = rank;
+                    const evidence = familyEvidenceFromRank(rank);
+                    pair.familyEvidence[f] = evidence;
+                    if (rank >= CONJUNCTION_MARK) standoutFamilies.push(f);
+
                     const w = familyWeightsNow[f] ?? 1;
                     if (w <= 0) return;
-                    weightedZ += z * w;
-                    zWeight += w;
+                    weightedEvidence += evidence * w;
+                    evidenceWeight += w;
                 });
 
-                const combined = zWeight > 0 ? weightedZ / zWeight : 0;
+                pair.standoutFamilies = standoutFamilies;
+                const combined = evidenceWeight > 0 ? weightedEvidence / evidenceWeight : 0;
                 combinedScores.push(combined);
 
                 allSimilarityPairs.push({
@@ -14660,6 +14759,9 @@
                     text1: pair.text1,
                     text2: pair.text2,
                     familyZ: pair.familyZ,
+                    familyRank: pair.familyRank,
+                    familyEvidence: pair.familyEvidence,
+                    standoutFamilies: pair.standoutFamilies,
                     familyPercentile: pair.familyPercentile,
                     familyPeak: pair.familyPeak,
                     similarity: pair.rawSimilarity,
@@ -14756,6 +14858,7 @@
             if (!cohort) return '';
             const { corpus, rows, familyHealth, familyCorrelation, effectiveViews, openness } = cohort;
             const nullSummary = currentNullModel();
+            const conjunction = conjunctionProfile();
 
             const familyLabel = (id) => {
                 const f = METRIC_FAMILIES.find(x => x.id === id);
@@ -14843,13 +14946,43 @@
                         <span style="color:#666;">Each ranks pairs almost identically to a sibling, so it adds a vote rather than a kind of evidence.</span>
                     </p>` : ''}
 
+                    ${conjunction ? `
+                    <p style="margin:12px 0 6px 0; font-weight:600;">How often several kinds of likeness coincide</p>
+                    <p style="margin:0 0 8px 0; color:#666; font-size:12px;">
+                        Each family's position is a rank, so exactly 5% of pairs sit in the top twentieth of any one
+                        family. If the families were independent views, the number standing out on several at once
+                        would follow the right-hand column.
+                    </p>
+                    <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:8px;">
+                        <thead><tr style="background:#1f6f8b; color:white;">
+                            <th style="padding:6px 8px; text-align:left;">Stands out on</th>
+                            <th style="padding:6px 8px; text-align:right;">Pairs</th>
+                            <th style="padding:6px 8px; text-align:right;">If families were independent</th>
+                        </tr></thead>
+                        <tbody>
+                        ${conjunction.atOrAbove.map((n, k) => k === 0 ? '' : `
+                            <tr style="background:${k % 2 ? '#fff' : '#f4f8fa'}; border-bottom:1px solid #e4edf1;">
+                                <td style="padding:6px 8px;">${k} or more of ${conjunction.F} families</td>
+                                <td style="padding:6px 8px; text-align:right; font-weight:${n > 0 && k >= 3 ? '700' : '400'};">${n.toLocaleString()}</td>
+                                <td style="padding:6px 8px; text-align:right; color:#888;">${conjunction.independentAtOrAbove[k] < 0.05 ? '&lt;0.05' : conjunction.independentAtOrAbove[k].toFixed(conjunction.independentAtOrAbove[k] < 10 ? 1 : 0)}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    <p style="margin:0 0 8px 0; color:#7d6608; font-size:12px;">
+                        Where the left column runs ahead of the right, that is your families overlapping rather than
+                        anything about these pairs &mdash; the same coupling the effective-views figure below
+                        measures. Read a conjunction count against the left column, never the right.
+                    </p>` : ''}
+
                     ${nullSummary ? `
                     <p style="margin:12px 0 6px 0; font-weight:600;">What a deviation is actually worth here</p>
                     <p style="margin:0 0 8px 0; color:#666; font-size:12px;">
-                        Scores are quoted in standard deviations, but that only carries a probability if the
-                        spread happens to be normal, and there is no reason to assume it is. Rather than assume,
-                        here are the real rates in this corpus beside what a normal reading of the same number
-                        would have claimed. Where the two columns diverge, trust the left one.
+                        The score being ranked is the combined evidence across families &mdash; several moderate
+                        agreements outweigh one spectacular outlier &mdash; quoted in standard deviations. But a
+                        deviation only carries a probability if the spread happens to be normal, and there is no
+                        reason to assume it is. Rather than assume, here are the real rates in this corpus beside
+                        what a normal reading of the same number would have claimed. Where the two columns
+                        diverge, trust the left one.
                     </p>
                     <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:8px;">
                         <thead><tr style="background:#1f6f8b; color:white;">
@@ -15515,11 +15648,56 @@
         // passage ones, rates against the class for punctuation, tag patterns for syntax.
         function renderFamilyEvidence(pair, prefetched) {
             const familyZ = pair.familyZ || {};
+            const familyRank = pair.familyRank || {};
             const present = METRIC_FAMILIES.filter(f => typeof familyZ[f.id] === 'number');
             if (!present.length) {
                 return `<p class="empty" style="color:#888;">No family scores were recorded for this pair. Re-run the analysis to produce them.</p>`;
             }
             const ordered = present.slice().sort((x, y) => familyZ[y.id] - familyZ[x.id]);
+
+            // The headline is not how high any one family scored - somebody always comes top of
+            // something - but on how many kinds of likeness this pair stands out at once, and how
+            // many other pairs in the same cohort manage as much.
+            const profile = conjunctionProfile();
+            const mark = profile ? profile.mark : 0.95;
+            const standout = ordered.filter(f => (familyRank[f.id] ?? 0) >= mark);
+            const k = standout.length;
+            const alsoReach = (profile && k < profile.atOrAbove.length) ? profile.atOrAbove[k] : null;
+            const others = alsoReach === null ? null : Math.max(0, alsoReach - 1);
+
+            // How many pairs this extreme a cohort shaped like this one throws up unaided. Without
+            // this line the count above oversells: coming top of four families sounds decisive, and
+            // in a cohort of any size somebody has to. This is the sentence that stops the banner
+            // from being an accusation dressed as arithmetic.
+            const nullNow = currentNullModel();
+            const expectedHere = (nullNow && nullNow.model.usable && isFinite(pair.adjustedScore))
+                ? nullNow.model.expectedAbove(pair.adjustedScore) : null;
+            const beatsChance = expectedHere !== null && expectedHere < 0.25;
+            const notable = k >= 3 && beatsChance;
+
+            const chanceLine = expectedHere === null ? '' : (beatsChance
+                ? `<br><span style="color:#7d6608;">A cohort shaped like this one would be expected to produce
+                   ${expectedHere < 0.01 ? 'far fewer than one' : expectedHere.toFixed(2)} pair${expectedHere >= 0.01 && expectedHere < 2 ? '' : 's'}
+                   this far out, so this is about
+                   <strong>${Math.round(1 / expectedHere).toLocaleString()}&times;</strong> what chance alone produces.</span>`
+                : `<br><span style="color:#666;">But a cohort shaped like this one would be expected to produce about
+                   ${expectedHere < 1 ? expectedHere.toFixed(2) : expectedHere.toFixed(1)} pair${Math.abs(expectedHere - 1) < 0.05 ? '' : 's'}
+                   this far out anyway, so this is roughly what chance produces &mdash; the coincidence is in the
+                   cohort, not in these two responses.</span>`);
+
+            const conjunctionBanner = !profile ? '' : `
+                <div style="background:${notable ? '#fdf2e3' : '#f4f8fa'}; border-left:4px solid ${notable ? '#b9770e' : '#1f6f8b'}; padding:11px 13px; border-radius:5px; margin-bottom:14px; font-size:13px; line-height:1.55;">
+                    ${k === 0
+                        ? `This pair does not stand out on any of the ${profile.F} families measured. Its position on
+                           the list comes from where it sits overall, not from several kinds of likeness coinciding.`
+                        : `<strong>Alike in ${k} of ${profile.F} ways at once:</strong>
+                           ${standout.map(f => escapeHtml(f.label)).join(', ')}.<br>
+                           ${others === 0
+                             ? `No other pair in this cohort of ${profile.pairs.toLocaleString()} does as much.`
+                             : `${others.toLocaleString()} other pair${others === 1 ? '' : 's'} of ${profile.pairs.toLocaleString()} do${others === 1 ? 'es' : ''} the same or more.`}`}
+                    ${chanceLine}
+                    ${k > 0 && k < 3 && beatsChance ? `<br><span style="color:#666;">Standing out on one or two families is ordinary in itself; what is not ordinary here is how far out this pair sits.</span>` : ''}
+                </div>`;
 
             const table = (headers, rows) => `
                 <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px;">
@@ -15694,7 +15872,7 @@
                     </table>`;
             };
 
-            return ordered.map(f => {
+            return conjunctionBanner + ordered.map(f => {
                 const z = familyZ[f.id];
                 const strong = z >= 2, negative = z < 0;
                 const explain = FAMILY_EXPLANATIONS[f.id] || { measures: f.blurb, method: '' };
