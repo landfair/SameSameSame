@@ -692,6 +692,14 @@
             padding: 2px 4px;
             border-radius: 3px;
         }
+        /* Highlight layers for the evidence view. One layer shows at a time: overlapping
+           colours across four categories are unreadable, and a reader comparing two texts is
+           asking one question at a time anyway. */
+        .hl-phrase   { background: #fff3a3; padding: 1px 0; border-radius: 2px; }
+        .hl-entity   { background: #bfe3ff; padding: 1px 0; border-radius: 2px; }
+        .hl-word     { background: #c8f0d8; padding: 1px 0; border-radius: 2px; }
+        .hl-register { background: #ffd9a8; padding: 1px 0; border-radius: 2px; }
+
         .highlight-exact {
             background: #ffeb3b;
             padding: 2px 4px;
@@ -9559,6 +9567,232 @@
         }
 
         // ============================================================================
+        // EVIDENCE RENDERING
+        // ============================================================================
+
+        // Highlight a set of terms in a text.
+        //
+        // Offsets are found on the raw text and the output is assembled with escaping applied
+        // to every part, matched or not. The older helper inserted marks into unescaped text,
+        // which meant a response containing a < or & rendered as broken markup.
+        function highlightTerms(text, terms, className) {
+            const source = String(text);
+            if (!terms || !terms.length) return escapeHtml(source);
+
+            const escaped = terms
+                .filter(t => t && String(t).trim().length > 1)
+                .map(t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                .sort((a, b) => b.length - a.length);
+            if (!escaped.length) return escapeHtml(source);
+
+            let matches = [];
+            try {
+                const re = new RegExp('(?:' + escaped.join('|') + ')', 'gi');
+                let m;
+                while ((m = re.exec(source)) !== null) {
+                    if (m[0].length === 0) { re.lastIndex++; continue; }
+                    matches.push([m.index, m.index + m[0].length]);
+                }
+            } catch (error) {
+                return escapeHtml(source);
+            }
+
+            // Merge overlaps so nested marks cannot be produced.
+            matches.sort((a, b) => a[0] - b[0]);
+            const merged = [];
+            matches.forEach(([s, e]) => {
+                const last = merged[merged.length - 1];
+                if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+                else merged.push([s, e]);
+            });
+
+            let html = '', cursor = 0;
+            merged.forEach(([s, e]) => {
+                html += escapeHtml(source.slice(cursor, s));
+                html += `<mark class="${className}">${escapeHtml(source.slice(s, e))}</mark>`;
+                cursor = e;
+            });
+            return html + escapeHtml(source.slice(cursor));
+        }
+
+        // What each family measures and how, in the plainest terms that stay true.
+        const FAMILY_EXPLANATIONS = {
+            content: {
+                measures: 'Words, phrases and names these two responses actually share.',
+                method: 'Every shared 3- to 5-word phrase, name and content word is weighted by how rare it is across the class, using log(N / responses containing it). A phrase everyone writes carries no weight; one appearing in only these two carries a lot.',
+                visible: true
+            },
+            semantic: {
+                measures: 'Whether the two responses say similar things, regardless of wording.',
+                method: 'Each response is split into passages of at most 300 words and embedded with a sentence model. The class average is subtracted first, so what remains is meaning specific to these two rather than the topic everyone was given. Passages are then matched to their closest counterpart.',
+                visible: false
+            },
+            structure: {
+                measures: 'Whether the two responses move through their argument in the same order.',
+                method: 'The passages are aligned in sequence, keeping their order, by the same dynamic program used to align biological sequences. Covering the same ground scores on Meaning; covering it in the same order scores here.',
+                visible: false
+            },
+            syntax: {
+                measures: 'How sentences are built, largely independent of what they are about.',
+                method: 'Each response is tagged for part of speech and cut into tag sequences. Shared sequences are weighted by rarity, because two responses sharing a common sentence shape says nothing, while sharing an unusual one says more.',
+                visible: false
+            },
+            style: {
+                measures: 'Habits a writer is not choosing deliberately: function words, punctuation, transitions, how sentences open.',
+                method: 'Fixed-vocabulary habits such as punctuation are compared as rates against the class average, so the measure is about departing from this cohort in the same way. Open-vocabulary habits such as which transitions are used are weighted by rarity.',
+                visible: true
+            },
+            surface: {
+                measures: 'Length and diversity figures.',
+                method: 'Closeness between two single numbers. Two responses near the class average score high here without sharing anything at all, which is why this family is weighted lightly by default and should rarely be read as evidence on its own.',
+                visible: false
+            }
+        };
+
+        // ============================================================================
+        // PAIR EVIDENCE
+        // ============================================================================
+        //
+        // What can actually be shown to a reader about why a pair was flagged.
+        //
+        // The families do not produce the same kind of evidence, and pretending otherwise is
+        // what makes a score feel arbitrary. Shared phrases, names and words are spans that can
+        // be pointed at in the text. Punctuation habits are rates against the class - there is
+        // no passage to highlight, and highlighting every comma would say nothing. Syntactic
+        // templates are spans, but the span itself is not the point; the tag pattern is, and
+        // showing the words would mislead. Argument path is not a highlight at all, it is a
+        // correspondence between passages. Each extractor therefore returns evidence in the
+        // shape that is honest for its family, and the renderer presents each shape differently.
+
+        function sharedVocabularyDetails(text1, text2, limit = 20) {
+            if (!contentProfileStats) return [];
+            const a = contentProfileFor(text1).vocabulary, b = contentProfileFor(text2).vocabulary;
+            const shared = [];
+            a.forEach((countA, word) => {
+                if (!b.has(word)) return;
+                const df = contentProfileStats.vocabularyDf.get(word) || 0;
+                shared.push({ word, df, inBoth: Math.min(countA, b.get(word)) });
+            });
+            return shared.sort((x, y) => x.df - y.df || y.inBoth - x.inBoth).slice(0, limit);
+        }
+
+        // Which of the open-vocabulary style features both responses use, rarest first.
+        function sharedStyleDetails(text1, text2, limit = 12) {
+            if (!styleProfileStats) return { register: [], transitions: [], openers: [] };
+            const p1 = styleProfileFor(text1), p2 = styleProfileFor(text2);
+
+            const sharedKeys = (mapA, mapB, df) => {
+                const out = [];
+                mapA.forEach((countA, key) => {
+                    if (!mapB.has(key)) return;
+                    out.push({ key, df: df.get(key) || 0, a: countA, b: mapB.get(key) });
+                });
+                return out.sort((x, y) => x.df - y.df).slice(0, limit);
+            };
+
+            return {
+                register: sharedKeys(p1.register, p2.register, styleProfileStats.registerDf),
+                transitions: sharedKeys(p1.transitions, p2.transitions, styleProfileStats.transitionDf),
+                openers: sharedKeys(p1.openers, p2.openers, styleProfileStats.openerDf)
+                    .map(o => ({ ...o, key: o.key.replace(/^w2?:/, '') }))
+            };
+        }
+
+        // Punctuation has no passage to point at, so it is reported as rates against the class:
+        // the features where both responses depart from the cohort in the same direction.
+        function punctuationComparison(text1, text2, limit = 6) {
+            if (!styleProfileStats || !styleProfileStats.punctuation) return [];
+            const { mean, sd } = styleProfileStats.punctuation;
+            const v1 = styleProfileFor(text1).punctuation, v2 = styleProfileFor(text2).punctuation;
+
+            return PUNCTUATION_FEATURES.map((f, k) => {
+                if (!(sd[k] > 1e-12)) return null;
+                const z1 = (v1[k] - mean[k]) / sd[k], z2 = (v2[k] - mean[k]) / sd[k];
+                // Only worth reporting where both depart the same way; one high and one low is
+                // a difference, not a shared habit.
+                if (Math.sign(z1) !== Math.sign(z2)) return null;
+                return { label: f.label, rate1: v1[k], rate2: v2[k], classMean: mean[k],
+                         z1, z2, strength: Math.min(Math.abs(z1), Math.abs(z2)) };
+            }).filter(Boolean).sort((a, b) => b.strength - a.strength).slice(0, limit);
+        }
+
+        // Shared POS templates that are rare in this cohort, with one example of the words each
+        // covers so the pattern is legible without pretending the words are the evidence.
+        function sharedPosTemplateDetails(text1, text2, n, limit = 8) {
+            if (!posTemplateStats) return [];
+            const a = posTemplateCounts(text1, n), b = posTemplateCounts(text2, n);
+            const df = posTemplateStats.bySize[n];
+            const total = posTemplateStats.total;
+
+            const shared = [];
+            a.forEach((_, template) => {
+                if (!b.has(template)) return;
+                const d = df.get(template) || 0;
+                shared.push({ template, df: d, weight: Math.log((total + 1) / (d + 1)) + 1 });
+            });
+            shared.sort((x, y) => x.df - y.df);
+
+            // Find the words the first occurrence of each template covers, in each text.
+            const exampleFor = (text, template) => {
+                const tags = pennTagSequence(text);
+                const words = String(text).split(/\s+/);
+                const wanted = template.split(' ');
+                for (let i = 0; i + wanted.length <= tags.length; i++) {
+                    let match = true;
+                    for (let k = 0; k < wanted.length; k++) if (tags[i + k] !== wanted[k]) { match = false; break; }
+                    if (match) return words.slice(i, i + wanted.length).join(' ');
+                }
+                return '';
+            };
+
+            return shared.slice(0, limit).map(s => ({
+                ...s, exampleA: exampleFor(text1, s.template), exampleB: exampleFor(text2, s.template)
+            }));
+        }
+
+        // Passage correspondences. Returns both the best match for each passage and the ordered
+        // alignment, which are different claims: the first says the same ground is covered, the
+        // second that it is covered in the same sequence.
+        function passageAlignmentDetails(text1, text2, limit = 6) {
+            if (!semanticIndex) return null;
+            const A = semanticIndex.byText.get(text1), B = semanticIndex.byText.get(text2);
+            if (!A || !B || !A.length || !B.length) return null;
+
+            const chunksA = semanticChunks(text1), chunksB = semanticChunks(text2);
+            const S = A.map(a => B.map(b => dotProduct(a, b)));
+
+            const m = A.length, n = B.length;
+            const D = Array.from({ length: m + 1 }, () => new Float64Array(n + 1));
+            const back = Array.from({ length: m + 1 }, () => new Uint8Array(n + 1));
+            for (let i = 1; i <= m; i++) {
+                for (let j = 1; j <= n; j++) {
+                    const diagonal = D[i-1][j-1] + Math.max(0, S[i-1][j-1]);
+                    const up = D[i-1][j], left = D[i][j-1];
+                    if (diagonal >= up && diagonal >= left) { D[i][j] = diagonal; back[i][j] = 1; }
+                    else if (up >= left) { D[i][j] = up; back[i][j] = 2; }
+                    else { D[i][j] = left; back[i][j] = 3; }
+                }
+            }
+            const ordered = [];
+            let i = m, j = n;
+            while (i > 0 && j > 0) {
+                if (back[i][j] === 1) {
+                    if (S[i-1][j-1] > 0) ordered.unshift({ a: i-1, b: j-1, score: S[i-1][j-1],
+                        textA: chunksA[i-1] || '', textB: chunksB[j-1] || '' });
+                    i--; j--;
+                } else if (back[i][j] === 2) i--; else j--;
+            }
+
+            const best = A.map((_, ia) => {
+                let bestJ = -1, bestScore = -Infinity;
+                S[ia].forEach((v, jb) => { if (v > bestScore) { bestScore = v; bestJ = jb; } });
+                return { a: ia, b: bestJ, score: bestScore, textA: chunksA[ia] || '', textB: chunksB[bestJ] || '' };
+            }).sort((x, y) => y.score - x.score).slice(0, limit);
+
+            return { ordered: ordered.slice(0, limit), best, chunkCountA: m, chunkCountB: n };
+        }
+
+        // ============================================================================
         // METRIC FAMILIES
         // ============================================================================
         //
@@ -13704,60 +13938,288 @@
             }
         }
 
+        // One section per family, strongest first, each rendering its evidence in the shape that
+        // suits it: spans for the families you can point at in the text, correspondences for the
+        // passage ones, rates against the class for punctuation, tag patterns for syntax.
+        function renderFamilyEvidence(pair, prefetched) {
+            const familyZ = pair.familyZ || {};
+            const present = METRIC_FAMILIES.filter(f => typeof familyZ[f.id] === 'number');
+            if (!present.length) {
+                return `<p class="empty" style="color:#888;">No family scores were recorded for this pair. Re-run the analysis to produce them.</p>`;
+            }
+            const ordered = present.slice().sort((x, y) => familyZ[y.id] - familyZ[x.id]);
+
+            const table = (headers, rows) => `
+                <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px;">
+                    <thead><tr style="background:#f4f0f8;">
+                        ${headers.map(h => `<th style="padding:7px 9px; text-align:${h.num ? 'right' : 'left'}; font-weight:600;">${escapeHtml(h.label)}</th>`).join('')}
+                    </tr></thead>
+                    <tbody>${rows.map((r, i) => `
+                        <tr style="border-bottom:1px solid #eee; background:${i % 2 ? '#fff' : '#fafafa'};">
+                            ${r.map((c, k) => `<td style="padding:7px 9px; text-align:${headers[k].num ? 'right' : 'left'}; ${headers[k].mono ? 'font-family:monospace; font-size:12px;' : ''}">${c}</td>`).join('')}
+                        </tr>`).join('')}
+                    </tbody>
+                </table>`;
+
+            const nothing = (msg) => `<p style="margin:8px 0 0 0; font-size:13px; color:#888;">${msg}</p>`;
+
+            const evidenceFor = (familyId) => {
+                if (familyId === 'content') {
+                    const parts = [];
+                    const { rarePhrases, entities, vocabulary } = prefetched;
+                    if (rarePhrases.shared && rarePhrases.shared.length) {
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Shared phrases, rarest first</h5>` +
+                            table([{label:'Phrase', mono:true}, {label:'Responses containing it', num:true}],
+                                rarePhrases.shared.slice(0, 12).map(s =>
+                                    [escapeHtml(s.ngram), `${s.df} of ${rareNgramIndex ? rareNgramIndex.total : '?'}`])));
+                    }
+                    if (entities.length) {
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Shared names and figures</h5>` +
+                            table([{label:'Name or figure'}, {label:'Responses containing it', num:true}],
+                                entities.slice(0, 10).map(e =>
+                                    [escapeHtml(e.entity), `${e.df} of ${contentProfileStats ? contentProfileStats.total : '?'}`])));
+                    }
+                    if (vocabulary.length) {
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Distinctive words in common</h5>` +
+                            `<p style="margin:6px 0 0 0; font-size:13px;">` +
+                            vocabulary.slice(0, 18).map(v =>
+                                `<span style="display:inline-block; background:#eafaf1; border:1px solid #cdeedd; border-radius:3px; padding:2px 7px; margin:0 4px 4px 0;">${escapeHtml(v.word)} <span style="color:#888;">${v.df}</span></span>`).join('') +
+                            `</p><p style="margin:5px 0 0 0; font-size:11px; color:#999;">The number is how many responses in the class use that word.</p>`);
+                    }
+                    return parts.length ? parts.join('') : nothing('These two share no phrase, name or distinctive word beyond what the class shares generally.');
+                }
+
+                if (familyId === 'semantic' || familyId === 'structure') {
+                    const alignment = passageAlignmentDetails(pair.text1, pair.text2, 5);
+                    if (!alignment) return nothing('Passage embeddings were not computed for this run, so there is nothing to show here. Enable the semantic metric and re-run.');
+                    const rows = (familyId === 'structure' ? alignment.ordered : alignment.best)
+                        .filter(x => x.score > 0);
+                    if (!rows.length) return nothing('No passages line up between these two responses.');
+                    const snippet = (t) => escapeHtml(String(t).slice(0, 180)) + (String(t).length > 180 ? '…' : '');
+                    return `<p style="margin:10px 0 0 0; font-size:12px; color:#666;">${
+                        familyId === 'structure'
+                          ? 'Passages matched in order. The same passages appearing in the same sequence is a stronger claim than merely appearing.'
+                          : 'Each passage shown beside its closest counterpart, wherever it appears.'}</p>` +
+                        rows.map(r => `
+                        <div style="display:grid; grid-template-columns:1fr 62px 1fr; gap:10px; align-items:center; margin-top:9px;">
+                            <div style="font-size:12px; background:#fafafa; border:1px solid #eee; border-radius:4px; padding:7px;">${snippet(r.textA)}</div>
+                            <div style="text-align:center; font-weight:700; color:#57068C; font-size:13px;">${r.score.toFixed(2)}</div>
+                            <div style="font-size:12px; background:#fafafa; border:1px solid #eee; border-radius:4px; padding:7px;">${snippet(r.textB)}</div>
+                        </div>`).join('');
+                }
+
+                if (familyId === 'syntax') {
+                    const six = sharedPosTemplateDetails(pair.text1, pair.text2, 6, 6);
+                    const four = six.length ? [] : sharedPosTemplateDetails(pair.text1, pair.text2, 4, 6);
+                    const rows = six.length ? six : four;
+                    if (!rows.length) return nothing('No unusual sentence templates in common. Common sentence shapes are shared by almost everyone and are not counted.');
+                    return `<p style="margin:10px 0 0 0; font-size:12px; color:#666;">
+                            Shared part-of-speech sequences that are rare in this class, with the words each
+                            happens to cover. The words are not the evidence - the pattern is - so two quite
+                            different sentences can match here.
+                        </p>` +
+                        table([{label:'Tag pattern', mono:true}, {label:`In ${escapeHtml(String(pair.id1))}`}, {label:`In ${escapeHtml(String(pair.id2))}`}, {label:'Responses', num:true}],
+                            rows.map(r => [escapeHtml(r.template), escapeHtml(r.exampleA || '-'), escapeHtml(r.exampleB || '-'),
+                                           `${r.df} of ${posTemplateStats ? posTemplateStats.total : '?'}`]));
+                }
+
+                if (familyId === 'style') {
+                    const { style } = prefetched;
+                    const punct = punctuationComparison(pair.text1, pair.text2, 5);
+                    const parts = [];
+                    const chips = (items, colour, note) => `<p style="margin:6px 0 0 0; font-size:13px;">` +
+                        items.map(i => `<span style="display:inline-block; background:${colour}; border-radius:3px; padding:2px 7px; margin:0 4px 4px 0;">${escapeHtml(i.key)} <span style="color:#888;">${i.df}</span></span>`).join('') +
+                        `</p><p style="margin:4px 0 0 0; font-size:11px; color:#999;">${note}</p>`;
+
+                    if (style.register.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Chatbot-register wording both used</h5>` +
+                            chips(style.register, '#fdebd0', 'The number is how many responses in the class use it. This list drifts as models change.'));
+                    if (style.transitions.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Transitions both used</h5>` +
+                            chips(style.transitions, '#e8f4fd', 'Which transitions, not how many - two writers can use the same number and share none of them.'));
+                    if (style.openers.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Sentence openings in common</h5>` +
+                            chips(style.openers, '#f0e8fd', 'How sentences begin.'));
+                    if (punct.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Punctuation habits, against the class</h5>` +
+                            `<p style="margin:6px 0 0 0; font-size:12px; color:#666;">Nothing to highlight here - punctuation is a rate, not a passage. These are the marks where both responses depart from the class in the same direction, per 1,000 words.</p>` +
+                            table([{label:'Mark'}, {label:escapeHtml(String(pair.id1)), num:true}, {label:escapeHtml(String(pair.id2)), num:true}, {label:'Class average', num:true}],
+                                punct.map(p => [escapeHtml(p.label), p.rate1.toFixed(1), p.rate2.toFixed(1), p.classMean.toFixed(1)])));
+
+                    return parts.length ? parts.join('') : nothing('No shared style habits stand out against the class.');
+                }
+
+                if (familyId === 'surface') {
+                    const words = t => String(t).split(/\s+/).filter(Boolean).length;
+                    const sentences = t => (String(t).match(/[^.!?]+[.!?]+/g) || []).length || 1;
+                    const a = pair.text1, b = pair.text2;
+                    return `<p style="margin:10px 0 0 0; font-size:12px; color:#666;">
+                            Nothing to highlight - these are properties of each response, not shared passages.
+                            Two responses near the class average look alike here while sharing nothing, so read
+                            this as context rather than evidence.
+                        </p>` +
+                        table([{label:'Measure'}, {label:escapeHtml(String(pair.id1)), num:true}, {label:escapeHtml(String(pair.id2)), num:true}],
+                            [['Words', words(a), words(b)],
+                             ['Sentences', sentences(a), sentences(b)],
+                             ['Average sentence length', (words(a)/sentences(a)).toFixed(1), (words(b)/sentences(b)).toFixed(1)]]);
+                }
+
+                return nothing('No evidence view for this family yet.');
+            };
+
+            return ordered.map(f => {
+                const z = familyZ[f.id];
+                const strong = z >= 2, negative = z < 0;
+                const explain = FAMILY_EXPLANATIONS[f.id] || { measures: f.blurb, method: '' };
+                return `
+                <details ${strong ? 'open' : ''} style="border:1px solid ${strong ? '#e6b0aa' : '#e0e0e0'}; border-left:4px solid ${strong ? '#c0392b' : negative ? '#bdc3c7' : '#57068C'}; border-radius:5px; margin-bottom:10px; background:white;">
+                    <summary style="cursor:pointer; padding:11px 13px; display:flex; align-items:center; gap:12px;">
+                        <strong style="color:#2c3e50;">${escapeHtml(f.label)}</strong>
+                        <span style="font-weight:700; color:${strong ? '#c0392b' : negative ? '#95a5a6' : '#57068C'};">
+                            ${z >= 0 ? '+' : ''}${z.toFixed(1)} SD
+                        </span>
+                        <span style="font-size:12px; color:#888;">
+                            ${negative ? 'argues against a match' : z < 0.5 ? 'contributed little' : strong ? 'strong contributor' : 'contributed'}
+                        </span>
+                    </summary>
+                    <div style="padding:0 13px 14px 13px;">
+                        <p style="margin:0 0 6px 0; font-size:13px; color:#444;">${escapeHtml(explain.measures)}</p>
+                        <p style="margin:0 0 4px 0; font-size:12px; color:#777;"><strong>How it is detected.</strong> ${escapeHtml(explain.method)}</p>
+                        ${evidenceFor(f.id)}
+                    </div>
+                </details>`;
+            }).join('');
+        }
+
+        // The evidence view for one pair.
+        //
+        // Both texts at the top, because a reader's first question is always "what do they
+        // actually say", and a score cannot answer that. Below them, why the pair was flagged,
+        // organised by family and ordered so the strongest evidence for THIS pair comes first -
+        // which varies: one pair is flagged for shared phrasing, another for taking the same
+        // route through an argument while sharing no wording at all.
+        //
+        // Each family reports in the form that is honest for it. Only the families whose
+        // evidence is visible in the text get a highlight layer; the others say plainly that
+        // there is nothing to point at and give their evidence another way.
         async function showPairComparison(pair) {
             const modal = document.getElementById('comparisonModal');
             const title = document.getElementById('modalTitle');
             const body = document.getElementById('modalBody');
 
-            // Clear any stored comparison pair (we're viewing a fresh comparison)
-            window.currentComparisonPair = null;
+            window.currentComparisonPair = pair;
 
-            title.textContent = `Respondent ${pair.id1} vs Respondent ${pair.id2}`;
+            const adjusted = pair.adjustedScore ?? 0;
+            title.textContent = `Respondent ${pair.id1} and Respondent ${pair.id2}`;
 
-            // Find shared phrases
-            const sharedPhrases = getCommonNgrams(pair.text1, pair.text2);
+            // Highlight layers, in the order a reader should try them.
+            const rarePhrases = sharedRareNgramDetails(pair.text1, pair.text2, 60);
+            const entities = sharedEntityDetails(pair.text1, pair.text2, 40);
+            const vocabulary = sharedVocabularyDetails(pair.text1, pair.text2, 40);
+            const style = sharedStyleDetails(pair.text1, pair.text2, 30);
 
-            // Highlight shared phrases in both texts
-            const highlighted1 = highlightSharedPhrases(pair.text1, sharedPhrases);
-            const highlighted2 = highlightSharedPhrases(pair.text2, sharedPhrases);
+            window.__highlightLayers = {
+                phrases: { label: 'Shared rare phrases', className: 'hl-phrase',
+                           terms: (rarePhrases.shared || []).map(s => s.ngram) },
+                names:   { label: 'Shared names and figures', className: 'hl-entity',
+                           terms: entities.map(e => e.entity) },
+                words:   { label: 'Distinctive shared words', className: 'hl-word',
+                           terms: vocabulary.map(v => v.word) },
+                register:{ label: 'Chatbot register', className: 'hl-register',
+                           terms: style.register.map(r => r.key) }
+            };
+            window.__pairForHighlight = pair;
 
-            // Generate metric badges (await since it's now async)
-            const metricBadges = await generateMetricBadges(pair.text1, pair.text2, pair.similarity, pair.id1, pair.id2);
+            const available = Object.entries(window.__highlightLayers).filter(([, l]) => l.terms.length);
+            const initial = available.length ? available[0][0] : 'none';
+
+            const layerButtons = available.map(([key, layer]) => `
+                <button onclick="applyHighlightLayer('${key}')" id="hlBtn_${key}"
+                    style="padding: 5px 11px; border: 1px solid #d5c9e0; background: white; border-radius: 4px;
+                           cursor: pointer; font-size: 12px;">
+                    ${escapeHtml(layer.label)} (${layer.terms.length})
+                </button>`).join('') + `
+                <button onclick="applyHighlightLayer('none')" id="hlBtn_none"
+                    style="padding: 5px 11px; border: 1px solid #d5c9e0; background: white; border-radius: 4px;
+                           cursor: pointer; font-size: 12px;">No highlighting</button>`;
+
+            const evidence = renderFamilyEvidence(pair, { rarePhrases, entities, vocabulary, style });
 
             body.innerHTML = `
-                <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; justify-content: center;">
-                    ${metricBadges}
+                <div style="background: ${adjusted >= 2 ? '#fdecea' : '#f4f6f7'}; padding: 12px 15px; border-radius: 6px; margin-bottom: 14px;">
+                    <span style="font-size: 26px; font-weight: 700; color: ${adjusted >= 3 ? '#c0392b' : adjusted >= 2 ? '#d35400' : '#5d6d7e'};">
+                        ${adjusted >= 0 ? '+' : ''}${adjusted.toFixed(1)} SD
+                    </span>
+                    <span style="font-size: 13px; color: #555; margin-left: 10px;">
+                        above what the rest of this cohort would predict for these two responses.
+                        Raw similarity ${(pair.similarity * 100).toFixed(1)}%.
+                    </span>
+                    <div style="font-size: 12px; color: #888; margin-top: 6px;">
+                        A ranking within this cohort, not a probability and not a finding of misconduct.
+                        Every response appears in many pairs, so these values are not independent.
+                    </div>
                 </div>
+
+                ${available.length ? `
+                <div style="display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+                    <span style="font-size: 12px; color: #666; font-weight: 600;">Highlight:</span>
+                    ${layerButtons}
+                </div>` : `
+                <div style="font-size: 12px; color: #888; margin-bottom: 10px;">
+                    Nothing in these two texts can be highlighted - they share no rare phrase, name or
+                    distinctive word. Whatever flagged this pair is in the sections below.
+                </div>`}
 
                 <div class="comparison-grid">
                     <div class="comparison-box">
-                        <div class="comparison-header">Respondent ${pair.id1}</div>
-                        <div class="comparison-text">${highlighted1}</div>
+                        <div class="comparison-header">Respondent ${escapeHtml(String(pair.id1))}</div>
+                        <div class="comparison-text" id="pairTextA">${escapeHtml(pair.text1)}</div>
                     </div>
                     <div class="comparison-box">
-                        <div class="comparison-header">Respondent ${pair.id2}</div>
-                        <div class="comparison-text">${highlighted2}</div>
+                        <div class="comparison-header">Respondent ${escapeHtml(String(pair.id2))}</div>
+                        <div class="comparison-text" id="pairTextB">${escapeHtml(pair.text2)}</div>
                     </div>
                 </div>
 
-                ${sharedPhrases.length > 0 ? `
-                    <div class="shared-phrases-box">
-                        <h4>Shared Phrases (${sharedPhrases.length})
-                            <span style="font-size: 11px; color: #666; font-weight: normal;">
-                                - Yellow = exact, Orange = fuzzy (paraphrase)
-                            </span>
-                        </h4>
-                        ${sharedPhrases.slice(0, 15).map(p =>
-                            `<span class="phrase-chip" style="background: ${p.type === 'exact' ? '#ffeb3b' : '#ffe0b2'}; border: 1px solid ${p.type === 'exact' ? '#ffc107' : '#ff9800'};">
-                                "${escapeHtml(p.text)}" (${p.length} words${p.type === 'fuzzy' ? ', ~' : ''})
-                            </span>`
-                        ).join('')}
-                        ${sharedPhrases.length > 15 ? `<span class="phrase-chip">+${sharedPhrases.length - 15} more</span>` : ''}
-                    </div>
-                ` : ''}
+                <h3 style="margin: 24px 0 4px 0; color: #57068C;">Why these two were flagged</h3>
+                <p style="margin: 0 0 14px 0; font-size: 13px; color: #666;">
+                    Strongest evidence first. Each score is how far this pair sits above the cohort on that
+                    kind of evidence; a family near zero contributed nothing, and a negative one argues
+                    against a match.
+                </p>
+                ${evidence}
             `;
 
             modal.style.display = 'block';
+            applyHighlightLayer(initial);
+        }
+
+        // Swap the highlight layer without rebuilding the modal.
+        function applyHighlightLayer(key) {
+            const pair = window.__pairForHighlight;
+            const layers = window.__highlightLayers || {};
+            if (!pair) return;
+
+            const a = document.getElementById('pairTextA'), b = document.getElementById('pairTextB');
+            if (!a || !b) return;
+
+            const layer = layers[key];
+            if (!layer) {
+                a.innerHTML = escapeHtml(pair.text1);
+                b.innerHTML = escapeHtml(pair.text2);
+            } else {
+                a.innerHTML = highlightTerms(pair.text1, layer.terms, layer.className);
+                b.innerHTML = highlightTerms(pair.text2, layer.terms, layer.className);
+            }
+
+            Object.keys(layers).concat('none').forEach(k => {
+                const btn = document.getElementById('hlBtn_' + k);
+                if (!btn) return;
+                const on = k === key;
+                btn.style.background = on ? '#57068C' : 'white';
+                btn.style.color = on ? 'white' : '#333';
+                btn.style.borderColor = on ? '#57068C' : '#d5c9e0';
+            });
         }
 
         function getCommonNgrams(text1, text2) {
