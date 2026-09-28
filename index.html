@@ -10025,6 +10025,128 @@
         }
 
         // ============================================================================
+        // HOW SURPRISED SHOULD ANYONE BE
+        // ============================================================================
+        //
+        // Everything this tool claims rests on one sentence: a resemblance this specific is
+        // unlikely to have happened by accident. That sentence is only as good as the model of
+        // what accident looks like, and until now there has not been one.
+        //
+        // Two things were missing. First, a score in standard deviations carries a probability
+        // only if the spread is normal, and similarity across a cohort is not - human writing is
+        // heavy-tailed, so large deviations occur far more often than a normal reading implies.
+        // Quoting "+5.3 SD" therefore OVERSTATES how remarkable a pair is, which is the dangerous
+        // direction: it makes an innocent coincidence look damning. Second, a cohort of N
+        // responses yields N(N-1)/2 pairs, so rare events are expected somewhere in the list. At
+        // 500 responses that is 124,750 comparisons, and a one-in-ten-thousand coincidence turns
+        // up about a dozen times from luck alone.
+        //
+        // Both are answerable from the cohort's own data, and neither needs a distributional
+        // assumption that has not been checked.
+
+        // Normal tail probability (Zelen & Severo), accurate to about 1e-7. Used only to show how
+        // far a normal reading of a deviation is from what this cohort actually contains.
+        function normalTailProbability(z) {
+            if (z < 0) return 1 - normalTailProbability(-z);
+            const t = 1 / (1 + 0.2316419 * z);
+            const d = 0.3989422804014327 * Math.exp(-z * z / 2);
+            return d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 +
+                   t * (-1.821255978 + t * 1.330274429))));
+        }
+
+        // The shape of the cohort's own upper tail.
+        //
+        // Under the assumption that contamination is sparse - most pairs in any cohort are
+        // innocent - the body of the distribution IS the null, and the question becomes whether
+        // the top pairs sit further out than the body's own shape says anyone should.
+        //
+        // The tail is fitted between the 80th and 95th percentiles, both inside the body and so
+        // uncontaminated even if several pairs are anomalous, then extrapolated with an
+        // exponential. That choice is deliberately conservative: a normal tail decays faster than
+        // an exponential one, so where the underlying spread is anywhere near normal this
+        // over-predicts how many extreme pairs to expect, and understates rather than overstates
+        // how surprising the observed ones are. Erring toward "less surprising" is the only
+        // defensible direction when the output may be put in front of a student.
+        function tailNullModel(values) {
+            const sorted = values.filter(v => typeof v === 'number' && isFinite(v)).sort((a, b) => a - b);
+            const n = sorted.length;
+            // Below this there is not enough tail for any of it to mean anything.
+            if (n < 40) return null;
+
+            const at = (p) => sorted[Math.min(n - 1, Math.max(0, Math.floor(p * n)))];
+            const p80 = at(0.80), p90 = at(0.90), p95 = at(0.95);
+            const model = { n, p80, p90, p95, usable: false };
+            if (!(p95 > p80)) return model;
+
+            // Rate from two quantiles inside the body rather than a fit over the exceedances,
+            // which would be biased by having deliberately excluded the top of the distribution.
+            model.lambda = Math.log(0.20 / 0.05) / (p95 - p80);
+
+            // Check the fit against a quantile it was not fitted to. For a pure exponential the
+            // 90th percentile falls exactly halfway between the 80th and the 95th; how far the
+            // real one misses says whether extrapolating from this shape is worth doing at all.
+            const predicted90 = p80 + Math.log(2) / model.lambda;
+            model.fitError = Math.abs(predicted90 - p90) / (p95 - p80);
+            model.usable = model.fitError <= 0.35;
+
+            model.observedAbove = (x) => {
+                let lo = 0, hi = n;
+                while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < x) lo = mid + 1; else hi = mid; }
+                return n - lo;
+            };
+
+            // How many pairs a cohort shaped like this one should put at or above x, if nothing
+            // unusual had happened. Inside the body the empirical count is its own best estimate;
+            // beyond the 95th percentile the fitted shape is extrapolated.
+            model.expectedAbove = (x) => {
+                if (!model.usable) return null;
+                if (x <= p95) return model.observedAbove(x);
+                return n * 0.05 * Math.exp(-model.lambda * (x - p95));
+            };
+
+            return model;
+        }
+
+        // What each deviation level is actually worth in this cohort, against what a normal
+        // reading of the same number would have claimed.
+        function cohortNullSummary(pairs) {
+            const scores = pairs.map(p => p.adjustedScore).filter(v => typeof v === 'number' && isFinite(v));
+            const model = tailNullModel(scores);
+            if (!model) return null;
+
+            // adjustedScore is already expressed in robust standard deviations, so it doubles as
+            // the z the interface quotes.
+            const calibration = [2, 3, 4, 5, 6].map(z => {
+                const observed = model.observedAbove(z);
+                const normalRate = normalTailProbability(z);
+                return {
+                    z, observed,
+                    observedOneIn: observed > 0 ? scores.length / observed : null,
+                    normalOneIn: normalRate > 1e-12 ? 1 / normalRate : null
+                };
+            });
+
+            // The single number worth stating out loud: at the highest level where this cohort
+            // still has pairs, how far apart are the two readings?
+            const anchor = calibration.filter(c => c.observed > 0).pop() || null;
+            const overstatement = (anchor && anchor.observedOneIn && anchor.normalOneIn)
+                ? anchor.normalOneIn / anchor.observedOneIn : null;
+
+            return { pairs: scores.length, model, calibration, anchor, overstatement };
+        }
+
+        // Recomputed only when the scores actually change - the sort is the expensive part, and
+        // changing a family weight rescores every pair.
+        let nullModelCache = { key: null, value: null };
+        function currentNullModel() {
+            const pairs = (typeof allSimilarityPairs !== 'undefined') ? allSimilarityPairs : [];
+            if (pairs.length < 40) return null;
+            const key = `${pairs.length}:${pairs[0].adjustedScore}:${pairs[pairs.length - 1].adjustedScore}`;
+            if (nullModelCache.key !== key) nullModelCache = { key, value: cohortNullSummary(pairs) };
+            return nullModelCache.value;
+        }
+
+        // ============================================================================
         // WHICH MEASURES CARRIED SIGNAL
         // ============================================================================
         //
@@ -14596,9 +14718,31 @@
             // lists everyone or no one.
             const filteredPairs = allSimilarityPairs.filter(p => (p.adjustedScore ?? 0) >= threshold);
 
-            // Update pair count display
-            document.getElementById('pairCountDisplay').textContent =
-                `${filteredPairs.length} pairs at or above ${threshold.toFixed(1)} SD`;
+            // A count on its own invites the wrong reading. Every cohort of any size puts some
+            // pairs at the top of its own distribution, so the number that matters is not how many
+            // cleared the line but how many MORE cleared it than a cohort shaped like this one
+            // would have produced anyway.
+            const nullSummary = currentNullModel();
+            const expected = nullSummary && nullSummary.model.usable
+                ? nullSummary.model.expectedAbove(threshold) : null;
+
+            let chanceNote = '';
+            if (expected !== null) {
+                const shown = expected >= 10 ? Math.round(expected).toLocaleString()
+                            : expected >= 1 ? expected.toFixed(1)
+                            : expected >= 0.05 ? expected.toFixed(2) : 'fewer than 0.05';
+                chanceNote = ` &middot; about ${shown} expected by chance`;
+                if (filteredPairs.length && expected >= filteredPairs.length) {
+                    chanceNote += ' (no more than this cohort would throw up on its own)';
+                }
+            }
+
+            const countEl = document.getElementById('pairCountDisplay');
+            countEl.innerHTML =
+                `${filteredPairs.length} of ${allSimilarityPairs.length.toLocaleString()} pairs at or above ${threshold.toFixed(1)}${chanceNote}`;
+            countEl.title = expected !== null
+                ? 'Expected count comes from this cohort\u2019s own distribution, not from a normal curve.'
+                : 'Too few pairs to model what chance alone would produce.';
 
             renderSimilarityPairs(filteredPairs);
             renderFlaggedRespondents(filteredPairs);
@@ -14611,6 +14755,7 @@
         function cohortReportHtml(cohort) {
             if (!cohort) return '';
             const { corpus, rows, familyHealth, familyCorrelation, effectiveViews, openness } = cohort;
+            const nullSummary = currentNullModel();
 
             const familyLabel = (id) => {
                 const f = METRIC_FAMILIES.find(x => x.id === id);
@@ -14697,6 +14842,52 @@
                         ${listOf(duplicated, r => `${escapeHtml(r.name)}`)}.
                         <span style="color:#666;">Each ranks pairs almost identically to a sibling, so it adds a vote rather than a kind of evidence.</span>
                     </p>` : ''}
+
+                    ${nullSummary ? `
+                    <p style="margin:12px 0 6px 0; font-weight:600;">What a deviation is actually worth here</p>
+                    <p style="margin:0 0 8px 0; color:#666; font-size:12px;">
+                        Scores are quoted in standard deviations, but that only carries a probability if the
+                        spread happens to be normal, and there is no reason to assume it is. Rather than assume,
+                        here are the real rates in this corpus beside what a normal reading of the same number
+                        would have claimed. Where the two columns diverge, trust the left one.
+                    </p>
+                    <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:8px;">
+                        <thead><tr style="background:#1f6f8b; color:white;">
+                            <th style="padding:6px 8px; text-align:left;">Score</th>
+                            <th style="padding:6px 8px; text-align:right;">Pairs this far out</th>
+                            <th style="padding:6px 8px; text-align:right;">Really about</th>
+                            <th style="padding:6px 8px; text-align:right;">A normal curve would say</th>
+                        </tr></thead>
+                        <tbody>
+                        ${nullSummary.calibration.map((c, i) => `
+                            <tr style="background:${i % 2 ? '#fff' : '#f4f8fa'}; border-bottom:1px solid #e4edf1;">
+                                <td style="padding:6px 8px;">+${c.z}</td>
+                                <td style="padding:6px 8px; text-align:right;">${c.observed.toLocaleString()}</td>
+                                <td style="padding:6px 8px; text-align:right;">${c.observedOneIn ? '1 in ' + Math.round(c.observedOneIn).toLocaleString() : '&mdash;'}</td>
+                                <td style="padding:6px 8px; text-align:right; color:#888;">${c.normalOneIn ? '1 in ' + Math.round(c.normalOneIn).toLocaleString() : '&mdash;'}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    ${nullSummary.overstatement && nullSummary.overstatement > 5 ? `<p style="margin:0 0 8px 0; padding:9px 11px; background:#fef5e7; border-radius:4px; color:#7d6608;">
+                        <strong>Read the deviation figures as ranking, not as odds.</strong>
+                        At +${nullSummary.anchor.z} this cohort really holds about 1 pair in
+                        ${Math.round(nullSummary.anchor.observedOneIn).toLocaleString()}, where a normal reading
+                        would have claimed 1 in ${Math.round(nullSummary.anchor.normalOneIn).toLocaleString()}
+                        &mdash; overstating how remarkable it is by roughly
+                        ${nullSummary.overstatement >= 100 ? Math.round(nullSummary.overstatement).toLocaleString() + '\u00d7' : nullSummary.overstatement.toFixed(0) + '\u00d7'}.
+                        Never quote the SD figure to anyone as a probability.
+                    </p>` : ''}
+                    ${!nullSummary.model.usable ? `<p style="margin:0 0 8px 0; color:#7d6608;">
+                        This cohort's tail does not follow a shape stable enough to extrapolate
+                        (fit error ${nullSummary.model.fitError.toFixed(2)}), so no expected-by-chance figure is
+                        offered beside the pair counts. The observed rates above still stand.
+                    </p>` : `<p style="margin:0 0 8px 0; color:#666; font-size:12px;">
+                        Beyond the 95th percentile the expected counts come from extrapolating the shape of this
+                        cohort's own body, fitted between its 80th and 95th percentiles where contamination
+                        cannot reach. The fit is exponential, which decays more slowly than a normal tail, so it
+                        errs toward predicting <em>more</em> coincidences than you should expect &mdash; the
+                        conservative direction.
+                    </p>`}` : ''}
 
                     ${familyHealth && familyHealth.length ? `
                     <p style="margin:12px 0 6px 0; font-weight:600;">What each family has left to say</p>

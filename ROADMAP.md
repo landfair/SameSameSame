@@ -97,20 +97,39 @@ answers "does this body of evidence favour the pair", which needs corroboration 
 single rare measure firing alone is not visible at family level. `pair.familyPeak` records the
 strongest single member and which measure produced it, precisely so Phase 3 can read both.
 
-## Phase 4 — An honest null
+## Phase 4 — An honest null — DONE
 
 Deliberately before Phase 3: conjunction counts are only meaningful once "extreme" is defined
 honestly. This is the phase with the least built and the most riding on it.
 
-- [ ] **4.1** Expected false alarms: at N responses there are N(N-1)/2 pairs. State how many
+- [x] **4.1** Expected false alarms: at N responses there are N(N-1)/2 pairs. State how many
       should clear the current threshold by chance alone, *before* showing the ranked list.
-- [ ] **4.2** Empirical null from the trimmed bulk rather than a parametric assumption. Most pairs
+- [x] **4.2** Empirical null from the trimmed bulk rather than a parametric assumption. Most pairs
       in a cohort are innocent, so fit the reference distribution on the bulk with the top few
       percent trimmed. Heavy tails in human writing (see Przystalski below) are direct evidence
       that a MAD-based SD reading misleads exactly where it is being used.
-- [ ] **4.3** Replace SD language with counts anywhere a student might see it. "Four of 124,750
+- [x] **4.3** Replace SD language with counts anywhere a student might see it. "Four of 124,750
       pairs in this cohort reach this" is defensible. "+5.3 SD" silently assumes a distribution
       that has not been verified.
+
+**What Phase 4 found, and why it makes Phase 3 load-bearing.**
+
+Neither corpus contains any excess convergence. Application answers: 7 pairs clear the default
+2.0 threshold where the cohort's own shape predicts 8. Op-eds: 1 clears it where 2.2 are
+predicted. The excess is negative at every threshold on both. The default threshold sits below
+the noise floor, and the flagged list was previously showing pairs that are exactly what a
+cohort of that size throws up on its own.
+
+The important consequence: **percentile-extreme is not the same as improbable.** The op-eds top
+pair is at or near the top of every one of the six families, and still scores 2.09 against 2.17
+expected. Someone always has to be at the top. The composite score, being an average across
+families, dilutes a pair that is extreme on all six toward the middle — so the composite
+provably cannot see the conjunction, which is the thing the whole approach rests on.
+
+Phase 3 is therefore not a refinement. It is where the discriminating power has to come from.
+
+The tail model keeps its teeth: on the op-ed cohort a pair at +6 would be about 530x above what
+chance produces. It is conservative, not inert.
 
 ## Phase 3 — Conjunction instead of composite
 
