@@ -13675,6 +13675,12 @@
 
         function updateThreshold(value) {
             const threshold = parseFloat(value);
+            // Keep the slider in step with the value being applied. Other code - the flagged
+            // respondent view in particular - reads the threshold back off the slider, and if
+            // the two drift apart the chips on screen stop agreeing with what clicking them
+            // finds.
+            const slider = document.getElementById('similarityThreshold');
+            if (slider && parseFloat(slider.value) !== threshold) slider.value = String(threshold);
             document.getElementById('thresholdDisplay').textContent = threshold.toFixed(1);
 
             // Filter on the cohort-relative score rather than raw similarity: with a close-ended
@@ -14186,75 +14192,55 @@
             }, 10); // Small delay to ensure spinner shows
         }
 
+        // One respondent's matches, stepped through in order. Same evidence view as the pair
+        // list, with the navigation appended.
         async function renderCurrentMatch() {
             if (!currentRespondent || currentRespondentMatches.length === 0) return;
 
-            const modal = document.getElementById('comparisonModal');
-            const title = document.getElementById('modalTitle');
-            const body = document.getElementById('modalBody');
-
             const match = currentRespondentMatches[currentMatchIndex];
-            const sharedPhrases = getCommonNgrams(currentRespondent.text, match.text);
 
-            // Same breakpoints the pair list uses, so a badge means the same thing in both places.
-            const matchAdjusted = match.adjustedScore ?? 0;
-            const scoreClass = matchAdjusted >= 3 ? 'similarity-high' :
-                               matchAdjusted >= 2 ? 'similarity-medium' : 'similarity-low';
+            // The full pair carries the per-family scores the evidence view needs; the match
+            // records only enough to list. Fall back to the match itself if it is not found.
+            const full = allSimilarityPairs.find(p =>
+                (String(p.id1) === String(currentRespondent.id) && String(p.id2) === String(match.id)) ||
+                (String(p.id2) === String(currentRespondent.id) && String(p.id1) === String(match.id)));
 
-            // Highlight shared phrases
-            const highlighted1 = highlightSharedPhrases(currentRespondent.text, sharedPhrases);
-            const highlighted2 = highlightSharedPhrases(match.text, sharedPhrases);
+            const pair = {
+                id1: currentRespondent.id, id2: match.id,
+                text1: currentRespondent.text, text2: match.text,
+                similarity: match.similarity,
+                adjustedScore: match.adjustedScore ?? full?.adjustedScore ?? 0,
+                familyZ: full ? full.familyZ : undefined
+            };
+            window.currentComparisonPair = pair;
 
-            // Generate metric badges (await since it's now async)
-            const metricBadges = await generateMetricBadges(currentRespondent.text, match.text, match.similarity, currentRespondent.id, match.id);
+            document.getElementById('modalTitle').textContent =
+                `Respondent ${currentRespondent.id} and Respondent ${match.id}` +
+                ` (${currentMatchIndex + 1} of ${currentRespondentMatches.length})`;
 
-            title.textContent = `Respondent ${currentRespondent.id} vs ${match.id} (${currentMatchIndex + 1} of ${currentRespondentMatches.length})`;
+            const view = buildPairEvidenceView(pair);
+            const atStart = currentMatchIndex === 0;
+            const atEnd = currentMatchIndex === currentRespondentMatches.length - 1;
+            const navButton = (label, handler, disabled) => `
+                <button onclick="${handler}" ${disabled ? 'disabled' : ''}
+                    style="padding: 9px 22px; background: ${disabled ? '#ccc' : '#57068C'}; color: white; border: none;
+                           border-radius: 5px; cursor: ${disabled ? 'not-allowed' : 'pointer'}; font-weight: 600; font-size: 14px;">
+                    ${label}
+                </button>`;
 
-            body.innerHTML = `
-                <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-bottom: 15px;">
-                    ${metricBadges}
-                </div>
+            document.getElementById('modalBody').innerHTML = view.html + `
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;
+                            margin-top: 22px; padding-top: 16px; border-top: 1px solid #e0e0e0;">
+                    ${navButton('&larr; Previous match', 'previousMatch()', atStart)}
+                    <span style="font-size: 13px; color: #666;">
+                        Match ${currentMatchIndex + 1} of ${currentRespondentMatches.length} for
+                        Respondent ${escapeHtml(String(currentRespondent.id))}
+                    </span>
+                    ${navButton('Next match &rarr;', 'nextMatch()', atEnd)}
+                </div>`;
 
-                <div class="comparison-grid">
-                    <div class="comparison-box">
-                        <div class="comparison-header">Respondent ${currentRespondent.id}</div>
-                        <div class="comparison-text">${highlighted1}</div>
-                    </div>
-                    <div class="comparison-box">
-                        <div class="comparison-header">Respondent ${match.id}</div>
-                        <div class="comparison-text">${highlighted2}</div>
-                    </div>
-                </div>
-
-                ${sharedPhrases.length > 0 ? `
-                    <div class="shared-phrases-box">
-                        <h4>Shared Phrases (${sharedPhrases.length})
-                            <span style="font-size: 11px; color: #666; font-weight: normal;">
-                                - Yellow = exact, Orange = fuzzy (paraphrase)
-                            </span>
-                        </h4>
-                        ${sharedPhrases.slice(0, 15).map(p =>
-                            `<span class="phrase-chip" style="background: ${p.type === 'exact' ? '#ffeb3b' : '#ffe0b2'}; border: 1px solid ${p.type === 'exact' ? '#ffc107' : '#ff9800'};">
-                                "${escapeHtml(p.text)}" (${p.length} words${p.type === 'fuzzy' ? ', ~' : ''})
-                            </span>`
-                        ).join('')}
-                        ${sharedPhrases.length > 15 ? `<span class="phrase-chip">+${sharedPhrases.length - 15} more</span>` : ''}
-                    </div>
-                ` : ''}
-
-                <div style="display: flex; justify-content: center; gap: 20px; margin-top: 20px;">
-                    <button onclick="prevMatch()" ${currentMatchIndex === 0 ? 'disabled' : ''}
-                        style="padding: 10px 30px; background: ${currentMatchIndex === 0 ? '#ccc' : '#57068C'}; color: white; border: none; border-radius: 5px; cursor: ${currentMatchIndex === 0 ? 'not-allowed' : 'pointer'}; font-weight: 600; font-size: 14px;">
-                        ← Previous
-                    </button>
-                    <button onclick="nextMatch()" ${currentMatchIndex === currentRespondentMatches.length - 1 ? 'disabled' : ''}
-                        style="padding: 10px 30px; background: ${currentMatchIndex === currentRespondentMatches.length - 1 ? '#ccc' : '#57068C'}; color: white; border: none; border-radius: 5px; cursor: ${currentMatchIndex === currentRespondentMatches.length - 1 ? 'not-allowed' : 'pointer'}; font-weight: 600; font-size: 14px;">
-                        Next →
-                    </button>
-                </div>
-            `;
-
-            modal.style.display = 'block';
+            document.getElementById('comparisonModal').style.display = 'block';
+            applyHighlightLayer(view.initialLayer);
         }
 
         function prevMatch() {
@@ -14435,17 +14421,15 @@
         // Each family reports in the form that is honest for it. Only the families whose
         // evidence is visible in the text get a highlight layer; the others say plainly that
         // there is nothing to point at and give their evidence another way.
-        async function showPairComparison(pair) {
-            const modal = document.getElementById('comparisonModal');
-            const title = document.getElementById('modalTitle');
-            const body = document.getElementById('modalBody');
-
-            window.currentComparisonPair = pair;
-
+        // The evidence view for one pair, shared by both ways of opening it: clicking a row in
+        // the pair list, and stepping through one respondent's matches from Flagged Respondents.
+        //
+        // Both used to have their own renderer, which is why the flagged-respondent view kept
+        // the old badge-and-percentage layout after the pair list had been rebuilt. One builder
+        // now serves both; only the title and the navigation differ.
+        function buildPairEvidenceView(pair) {
             const adjusted = pair.adjustedScore ?? 0;
-            title.textContent = `Respondent ${pair.id1} and Respondent ${pair.id2}`;
 
-            // Highlight layers, in the order a reader should try them.
             const rarePhrases = sharedRareNgramDetails(pair.text1, pair.text2, 60);
             const entities = sharedEntityDetails(pair.text1, pair.text2, 40);
             const vocabulary = sharedVocabularyDetails(pair.text1, pair.text2, 40);
@@ -14464,7 +14448,7 @@
             window.__pairForHighlight = pair;
 
             const available = Object.entries(window.__highlightLayers).filter(([, l]) => l.terms.length);
-            const initial = available.length ? available[0][0] : 'none';
+            const initialLayer = available.length ? available[0][0] : 'none';
 
             const layerButtons = available.map(([key, layer]) => `
                 <button onclick="applyHighlightLayer('${key}')" id="hlBtn_${key}"
@@ -14478,7 +14462,7 @@
 
             const evidence = renderFamilyEvidence(pair, { rarePhrases, entities, vocabulary, style });
 
-            body.innerHTML = `
+            const html = `
                 <div style="background: ${adjusted >= 2 ? '#fdecea' : '#f4f6f7'}; padding: 12px 15px; border-radius: 6px; margin-bottom: 14px;">
                     <span style="font-size: 26px; font-weight: 700; color: ${adjusted >= 3 ? '#c0392b' : adjusted >= 2 ? '#d35400' : '#5d6d7e'};">
                         ${adjusted >= 0 ? '+' : ''}${adjusted.toFixed(1)} SD
@@ -14520,11 +14504,21 @@
                     kind of evidence; a family near zero contributed nothing, and a negative one argues
                     against a match.
                 </p>
-                ${evidence}
-            `;
+                ${evidence}`;
 
+            return { html, initialLayer };
+        }
+
+        async function showPairComparison(pair) {
+            const modal = document.getElementById('comparisonModal');
+            window.currentComparisonPair = pair;
+            document.getElementById('modalTitle').textContent =
+                `Respondent ${pair.id1} and Respondent ${pair.id2}`;
+
+            const view = buildPairEvidenceView(pair);
+            document.getElementById('modalBody').innerHTML = view.html;
             modal.style.display = 'block';
-            applyHighlightLayer(initial);
+            applyHighlightLayer(view.initialLayer);
         }
 
         // Swap the highlight layer without rebuilding the modal.
