@@ -692,6 +692,14 @@
             padding: 2px 4px;
             border-radius: 3px;
         }
+        /* Highlight layers for the evidence view. One layer shows at a time: overlapping
+           colours across four categories are unreadable, and a reader comparing two texts is
+           asking one question at a time anyway. */
+        .hl-phrase   { background: #fff3a3; padding: 1px 0; border-radius: 2px; }
+        .hl-entity   { background: #bfe3ff; padding: 1px 0; border-radius: 2px; }
+        .hl-word     { background: #c8f0d8; padding: 1px 0; border-radius: 2px; }
+        .hl-register { background: #ffd9a8; padding: 1px 0; border-radius: 2px; }
+
         .highlight-exact {
             background: #ffeb3b;
             padding: 2px 4px;
@@ -910,19 +918,24 @@
                     Analyze corpus-internal homogeneity by measuring pairwise similarity between responses.
                     For detecting unusual convergence in survey responses, essays, homework exercises, or any other corpus of texts.
                 </p>
-                <button onclick="showMetricSelection()"
+                <button onclick="document.getElementById('csvFile').click()"
                     style="padding: 16px 40px; background: #57068C; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 18px; box-shadow: 0 4px 12px rgba(87, 6, 140, 0.3); transition: all 0.3s;"
                     onmouseover="this.style.background='#6d0aac'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(87, 6, 140, 0.4)'"
                     onmouseout="this.style.background='#57068C'; this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(87, 6, 140, 0.3)'">
-                    <i class="fas fa-sliders-h"></i> Choose Similarity Metrics
+                    <i class="fas fa-file-csv"></i> Upload a CSV
                 </button>
                 <div style="margin-top: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3; text-align: left;">
-                    <h4 style="margin-top: 0; color: #1565c0; font-size: 16px;">Getting Started</h4>
+                    <h4 style="margin-top: 0; color: #1565c0; font-size: 16px;">How this works</h4>
                     <ol style="color: #666; font-size: 14px; line-height: 1.8; margin: 10px 0;">
-                        <li><strong>Choose which similarity metrics</strong> you want to use (24 available)</li>
-                        <li><strong>Upload your CSV file</strong> with text responses</li>
-                        <li><strong>Review results</strong> showing suspicious similarity patterns</li>
+                        <li><strong>Upload your CSV.</strong> One response per row.</li>
+                        <li><strong>Choose which column to analyse</strong> - you will see a sample of each.</li>
+                        <li><strong>Every measure runs.</strong> Afterwards the tool reports which ones actually
+                            carried signal in your data and suggests weights, so you are not asked to guess
+                            beforehand.</li>
                     </ol>
+                    <p style="color:#777; font-size:13px; margin:10px 0 0 0;">
+                        Nothing is uploaded anywhere. The analysis runs entirely in this page.
+                    </p>
                 </div>
             </div>
         </div>
@@ -959,6 +972,32 @@
                         <i class="fas fa-edit"></i> Change Metrics
                     </button>
                 </div>
+            </div>
+        </div>
+
+        <!-- Column chooser: shown after a CSV is parsed, before anything is analysed. -->
+        <div id="columnChooserScreen" style="display: none; padding: 30px 20px; max-width: 980px; margin: 0 auto;">
+            <h2 style="color: #57068C; font-size: 26px; margin-bottom: 6px;">Which column holds the responses?</h2>
+            <p id="columnChooserSummary" style="color: #666; font-size: 14px; margin-bottom: 20px;"></p>
+            <div id="columnChooserList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+
+            <div id="referenceChooser" style="margin-top: 24px; padding: 14px; background: #f6f0fa; border: 1px solid #d5c9e0; border-radius: 6px;">
+                <strong style="color: #57068C; font-size: 14px;">Reference texts (optional)</strong>
+                <p style="font-size: 13px; color: #666; margin: 6px 0 8px 0;">
+                    If your CSV marks chatbot-written texts in a column, say which. With three or more the tool
+                    can fit its own weights instead of guessing which measures matter for this assignment.
+                </p>
+                <select id="referenceColumnChooser" style="padding: 6px 10px; font-size: 13px;"></select>
+            </div>
+
+            <div style="margin-top: 24px; display: flex; gap: 12px; align-items: center;">
+                <button id="runAnalysisBtn" onclick="startAnalysisFromChooser()"
+                    style="padding: 13px 30px; background: #57068C; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 15px;">
+                    Analyse this column
+                </button>
+                <span style="font-size: 12px; color: #888;">
+                    Every measure runs. You will be told afterwards which ones mattered.
+                </span>
             </div>
         </div>
 
@@ -2310,6 +2349,7 @@
                         <span class="panel-info" id="pairCountDisplay">0 pairs above threshold</span>
                     </div>
                     <div class="panel-content">
+                        <div id="signalReport" style="margin: 0 0 14px 0;"></div>
                         <div id="inertMetricNotice" style="display: none; margin: 0 0 12px 0; padding: 10px 12px; background: #fef5e7; border-left: 4px solid #f39c12; border-radius: 4px; font-size: 13px; color: #7d6608;"></div>
                         <div id="similarityPairsList">
                             <p style="color: #999; text-align: center; padding: 40px;">
@@ -3794,12 +3834,93 @@
                 console.log(`Reference column detected: "${headers[referenceColumn]}" (${countFlaggedRows()} rows flagged)`);
             }
 
-            // Hide welcome/upload screens and show app interface
-            document.getElementById('welcomeScreen').style.display = 'none';
-            document.getElementById('uploadPromptScreen').style.display = 'none';
+            // Stop here and ask which column to analyse.
+            //
+            // The column is guessed by content and offered as the default, but it is shown
+            // rather than assumed: a guess that silently picks the wrong column produces a page
+            // of plausible scores that mean nothing, which is worse than asking. A one-word
+            // Decision column in a real export did exactly that.
+            showColumnChooser();
+        }
+
+        function showColumnChooser() {
+            ['welcomeScreen', 'uploadPromptScreen', 'controls', 'dashboard'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+            const screen = document.getElementById('columnChooserScreen');
+            if (screen) screen.style.display = 'block';
+
+            renderColumnChooser();
+        }
+
+        function renderColumnChooser() {
+            const list = document.getElementById('columnChooserList');
+            const summary = document.getElementById('columnChooserSummary');
+            if (!list) return;
+
+            const sample = csvData.slice(0, 200);
+            const stats = headers.map((header, i) => {
+                const values = sample.map(r => String(r[i] ?? '').trim());
+                const nonEmpty = values.filter(Boolean);
+                const lengths = nonEmpty.map(v => v.split(/\s+/).length).sort((a, b) => a - b);
+                const preview = nonEmpty.find(v => v.length > 20) || nonEmpty[0] || '';
+                return {
+                    index: i, header: header || `Column ${i + 1}`,
+                    filled: nonEmpty.length, total: sample.length,
+                    medianWords: lengths.length ? lengths[lengths.length >> 1] : 0,
+                    preview: preview.slice(0, 190)
+                };
+            });
+
+            if (summary) {
+                summary.textContent =
+                    `${csvData.length} row${csvData.length === 1 ? '' : 's'} read from the file. ` +
+                    `The column with the most prose is selected below; change it if that is not the one you mean.`;
+            }
+
+            list.innerHTML = stats.map(s => {
+                const chosen = s.index === currentColumn;
+                const tooShort = s.medianWords < 5;
+                return `
+                <label style="display:block; cursor:pointer; padding:12px 14px; border:2px solid ${chosen ? '#57068C' : '#e0e0e0'};
+                              border-radius:6px; background:${chosen ? '#faf7fd' : 'white'};">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <input type="radio" name="responseColumn" value="${s.index}" ${chosen ? 'checked' : ''}
+                               onchange="chooseResponseColumn(${s.index})">
+                        <strong style="color:#2c3e50;">${escapeHtml(s.header)}</strong>
+                        <span style="font-size:12px; color:${tooShort ? '#c0392b' : '#888'};">
+                            ${s.medianWords} word${s.medianWords === 1 ? '' : 's'} typical · ${s.filled} of ${s.total} filled
+                            ${tooShort ? ' · too short to analyse meaningfully' : ''}
+                        </span>
+                    </div>
+                    ${s.preview ? `<div style="margin:7px 0 0 27px; font-size:12px; color:#666; font-style:italic;">${escapeHtml(s.preview)}${s.preview.length >= 190 ? '…' : ''}</div>` : ''}
+                </label>`;
+            }).join('');
+
+            const refSelect = document.getElementById('referenceColumnChooser');
+            if (refSelect) {
+                refSelect.innerHTML = '<option value="-1">None</option>' +
+                    headers.map((h, i) => i === 0 ? '' :
+                        `<option value="${i}"${i === referenceColumn ? ' selected' : ''}>${escapeHtml(h || 'Column ' + (i + 1))}</option>`).join('');
+                refSelect.onchange = (e) => { referenceColumn = parseInt(e.target.value); renderColumnChooser(); };
+            }
+        }
+
+        function chooseResponseColumn(index) {
+            currentColumn = index;
+            const select = document.getElementById('columnSelect');
+            if (select) select.value = String(index);
+            renderColumnChooser();
+        }
+
+        function startAnalysisFromChooser() {
+            const screen = document.getElementById('columnChooserScreen');
+            if (screen) screen.style.display = 'none';
             document.getElementById('controls').style.display = 'block';
             document.getElementById('dashboard').style.display = 'block';
 
+            populateReferenceColumnSelect();
             analyzeCorpus();
             saveSession();
         }
@@ -4353,8 +4474,10 @@
             }
         }
 
+        // Kept for the header menu. The settings dialog is no longer a step anyone has to pass
+        // through before analysing - every measure runs, and the tool reports afterwards which
+        // ones carried signal.
         function showMetricSelection() {
-            // Open metric settings modal from welcome screen
             toggleMetricSettings();
         }
 
@@ -9559,6 +9682,340 @@
         }
 
         // ============================================================================
+        // WHICH MEASURES CARRIED SIGNAL
+        // ============================================================================
+        //
+        // Asking someone to pick metrics before running anything asks them to guess. Which
+        // measures matter depends on the assignment: a close-ended prompt makes lexical overlap
+        // useless, short answers give the entity measures nothing to work with, a cohort that
+        // writes nothing chatbot-like leaves the register markers silent. None of that is
+        // knowable in advance, and all of it is visible afterwards.
+        //
+        // So everything runs, and this reports what happened. With reference texts the honest
+        // answer comes from fitting against them. Without, a measure is judged on whether it
+        // singles anybody out: one that spreads every pair evenly across its range has told you
+        // nothing, however much variance it has. The diagnostic is how far the top pairs sit
+        // above the typical pair, in robust standard deviations.
+
+        function diagnoseMetricSignal() {
+            if (!allSimilarityPairs.length) return null;
+
+            const pairsWithMetrics = window.__lastPairMetrics || [];
+            if (!pairsWithMetrics.length) return null;
+
+            const selected = getSelectedMetrics();
+            const rows = [];
+
+            selected.forEach(metric => {
+                const values = pairsWithMetrics
+                    .map(p => p.metrics[metric])
+                    .filter(v => typeof v === 'number' && isFinite(v));
+                if (values.length < 5) {
+                    rows.push({ metric, verdict: 'no values', reach: 0 });
+                    return;
+                }
+
+                const scale = robustScale(values);
+                if (!scale.scale) {
+                    rows.push({ metric, verdict: 'identical for every pair', reach: 0 });
+                    return;
+                }
+
+                // How far out do the most extreme pairs sit? A measure that singles a handful of
+                // pairs out is informative here; one where everything lands within a couple of
+                // deviations has ranked the cohort without distinguishing anyone.
+                const z = values.map(v => (v - scale.center) / scale.scale).sort((a, b) => b - a);
+                const reach = z[0];
+                const top1pct = z[Math.max(0, Math.floor(z.length * 0.01))];
+
+                let verdict;
+                if (reach >= 8) verdict = 'singles out a few pairs sharply';
+                else if (reach >= 4) verdict = 'separates the top pairs';
+                else if (reach >= 2) verdict = 'weak separation';
+                else verdict = 'does not distinguish anyone';
+
+                rows.push({ metric, reach, top1pct, verdict, family: FAMILY_OF_METRIC[metric] || '-' });
+            });
+
+            // Redundancy: within a family, a metric that ranks pairs almost identically to a
+            // stronger sibling is adding a vote, not information.
+            const rank = (metric) => {
+                const vals = pairsWithMetrics.map(p => p.metrics[metric]);
+                const order = vals.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+                const r = new Array(vals.length);
+                order.forEach(([, i], k) => { r[i] = k; });
+                return r;
+            };
+            const corr = (a, b) => {
+                const n = a.length, ma = (n-1)/2, mb = (n-1)/2;
+                let num = 0, da = 0, db = 0;
+                for (let i = 0; i < n; i++) { const x = a[i]-ma, y = b[i]-mb; num += x*y; da += x*x; db += y*y; }
+                return (da && db) ? num/Math.sqrt(da*db) : 0;
+            };
+            const usable = rows.filter(r => r.reach > 0).sort((x, y) => y.reach - x.reach);
+            const ranks = {};
+            usable.forEach(r => { try { ranks[r.metric] = rank(r.metric); } catch (e) {} });
+            usable.forEach((r, i) => {
+                for (let j = 0; j < i; j++) {
+                    const other = usable[j];
+                    if (other.family !== r.family || !ranks[r.metric] || !ranks[other.metric]) continue;
+                    if (corr(ranks[r.metric], ranks[other.metric]) > 0.95) {
+                        r.duplicateOf = other.metric;
+                        break;
+                    }
+                }
+            });
+
+            return { rows: rows.sort((x, y) => y.reach - x.reach), pairs: pairsWithMetrics.length };
+        }
+
+        // Suggested family weights from the diagnosis: a family is worth as much as the reach of
+        // its best non-duplicate measure, rescaled so the strongest family sits at 2.0.
+        function suggestFamilyWeights(diagnosis) {
+            if (!diagnosis) return null;
+            const best = {};
+            diagnosis.rows.forEach(r => {
+                if (!r.family || r.family === '-' || r.duplicateOf) return;
+                best[r.family] = Math.max(best[r.family] || 0, r.reach);
+            });
+            const peak = Math.max(...Object.values(best), 0);
+            if (!peak) return null;
+
+            const weights = {};
+            METRIC_FAMILIES.forEach(f => {
+                const reach = best[f.id] || 0;
+                weights[f.id] = Math.round((2 * reach / peak) * 10) / 10;
+            });
+            return weights;
+        }
+
+        // ============================================================================
+        // EVIDENCE RENDERING
+        // ============================================================================
+
+        // Highlight a set of terms in a text.
+        //
+        // Offsets are found on the raw text and the output is assembled with escaping applied
+        // to every part, matched or not. The older helper inserted marks into unescaped text,
+        // which meant a response containing a < or & rendered as broken markup.
+        function highlightTerms(text, terms, className) {
+            const source = String(text);
+            if (!terms || !terms.length) return escapeHtml(source);
+
+            const escaped = terms
+                .filter(t => t && String(t).trim().length > 1)
+                .map(t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                .sort((a, b) => b.length - a.length);
+            if (!escaped.length) return escapeHtml(source);
+
+            let matches = [];
+            try {
+                const re = new RegExp('(?:' + escaped.join('|') + ')', 'gi');
+                let m;
+                while ((m = re.exec(source)) !== null) {
+                    if (m[0].length === 0) { re.lastIndex++; continue; }
+                    matches.push([m.index, m.index + m[0].length]);
+                }
+            } catch (error) {
+                return escapeHtml(source);
+            }
+
+            // Merge overlaps so nested marks cannot be produced.
+            matches.sort((a, b) => a[0] - b[0]);
+            const merged = [];
+            matches.forEach(([s, e]) => {
+                const last = merged[merged.length - 1];
+                if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+                else merged.push([s, e]);
+            });
+
+            let html = '', cursor = 0;
+            merged.forEach(([s, e]) => {
+                html += escapeHtml(source.slice(cursor, s));
+                html += `<mark class="${className}">${escapeHtml(source.slice(s, e))}</mark>`;
+                cursor = e;
+            });
+            return html + escapeHtml(source.slice(cursor));
+        }
+
+        // What each family measures and how, in the plainest terms that stay true.
+        const FAMILY_EXPLANATIONS = {
+            content: {
+                measures: 'Words, phrases and names these two responses actually share.',
+                method: 'Every shared 3- to 5-word phrase, name and content word is weighted by how rare it is across the class, using log(N / responses containing it). A phrase everyone writes carries no weight; one appearing in only these two carries a lot.',
+                visible: true
+            },
+            semantic: {
+                measures: 'Whether the two responses say similar things, regardless of wording.',
+                method: 'Each response is split into passages of at most 300 words and embedded with a sentence model. The class average is subtracted first, so what remains is meaning specific to these two rather than the topic everyone was given. Passages are then matched to their closest counterpart.',
+                visible: false
+            },
+            structure: {
+                measures: 'Whether the two responses move through their argument in the same order.',
+                method: 'The passages are aligned in sequence, keeping their order, by the same dynamic program used to align biological sequences. Covering the same ground scores on Meaning; covering it in the same order scores here.',
+                visible: false
+            },
+            syntax: {
+                measures: 'How sentences are built, largely independent of what they are about.',
+                method: 'Each response is tagged for part of speech and cut into tag sequences. Shared sequences are weighted by rarity, because two responses sharing a common sentence shape says nothing, while sharing an unusual one says more.',
+                visible: false
+            },
+            style: {
+                measures: 'Habits a writer is not choosing deliberately: function words, punctuation, transitions, how sentences open.',
+                method: 'Fixed-vocabulary habits such as punctuation are compared as rates against the class average, so the measure is about departing from this cohort in the same way. Open-vocabulary habits such as which transitions are used are weighted by rarity.',
+                visible: true
+            },
+            surface: {
+                measures: 'Length and diversity figures.',
+                method: 'Closeness between two single numbers. Two responses near the class average score high here without sharing anything at all, which is why this family is weighted lightly by default and should rarely be read as evidence on its own.',
+                visible: false
+            }
+        };
+
+        // ============================================================================
+        // PAIR EVIDENCE
+        // ============================================================================
+        //
+        // What can actually be shown to a reader about why a pair was flagged.
+        //
+        // The families do not produce the same kind of evidence, and pretending otherwise is
+        // what makes a score feel arbitrary. Shared phrases, names and words are spans that can
+        // be pointed at in the text. Punctuation habits are rates against the class - there is
+        // no passage to highlight, and highlighting every comma would say nothing. Syntactic
+        // templates are spans, but the span itself is not the point; the tag pattern is, and
+        // showing the words would mislead. Argument path is not a highlight at all, it is a
+        // correspondence between passages. Each extractor therefore returns evidence in the
+        // shape that is honest for its family, and the renderer presents each shape differently.
+
+        function sharedVocabularyDetails(text1, text2, limit = 20) {
+            if (!contentProfileStats) return [];
+            const a = contentProfileFor(text1).vocabulary, b = contentProfileFor(text2).vocabulary;
+            const shared = [];
+            a.forEach((countA, word) => {
+                if (!b.has(word)) return;
+                const df = contentProfileStats.vocabularyDf.get(word) || 0;
+                shared.push({ word, df, inBoth: Math.min(countA, b.get(word)) });
+            });
+            return shared.sort((x, y) => x.df - y.df || y.inBoth - x.inBoth).slice(0, limit);
+        }
+
+        // Which of the open-vocabulary style features both responses use, rarest first.
+        function sharedStyleDetails(text1, text2, limit = 12) {
+            if (!styleProfileStats) return { register: [], transitions: [], openers: [] };
+            const p1 = styleProfileFor(text1), p2 = styleProfileFor(text2);
+
+            const sharedKeys = (mapA, mapB, df) => {
+                const out = [];
+                mapA.forEach((countA, key) => {
+                    if (!mapB.has(key)) return;
+                    out.push({ key, df: df.get(key) || 0, a: countA, b: mapB.get(key) });
+                });
+                return out.sort((x, y) => x.df - y.df).slice(0, limit);
+            };
+
+            return {
+                register: sharedKeys(p1.register, p2.register, styleProfileStats.registerDf),
+                transitions: sharedKeys(p1.transitions, p2.transitions, styleProfileStats.transitionDf),
+                openers: sharedKeys(p1.openers, p2.openers, styleProfileStats.openerDf)
+                    .map(o => ({ ...o, key: o.key.replace(/^w2?:/, '') }))
+            };
+        }
+
+        // Punctuation has no passage to point at, so it is reported as rates against the class:
+        // the features where both responses depart from the cohort in the same direction.
+        function punctuationComparison(text1, text2, limit = 6) {
+            if (!styleProfileStats || !styleProfileStats.punctuation) return [];
+            const { mean, sd } = styleProfileStats.punctuation;
+            const v1 = styleProfileFor(text1).punctuation, v2 = styleProfileFor(text2).punctuation;
+
+            return PUNCTUATION_FEATURES.map((f, k) => {
+                if (!(sd[k] > 1e-12)) return null;
+                const z1 = (v1[k] - mean[k]) / sd[k], z2 = (v2[k] - mean[k]) / sd[k];
+                // Only worth reporting where both depart the same way; one high and one low is
+                // a difference, not a shared habit.
+                if (Math.sign(z1) !== Math.sign(z2)) return null;
+                return { label: f.label, rate1: v1[k], rate2: v2[k], classMean: mean[k],
+                         z1, z2, strength: Math.min(Math.abs(z1), Math.abs(z2)) };
+            }).filter(Boolean).sort((a, b) => b.strength - a.strength).slice(0, limit);
+        }
+
+        // Shared POS templates that are rare in this cohort, with one example of the words each
+        // covers so the pattern is legible without pretending the words are the evidence.
+        function sharedPosTemplateDetails(text1, text2, n, limit = 8) {
+            if (!posTemplateStats) return [];
+            const a = posTemplateCounts(text1, n), b = posTemplateCounts(text2, n);
+            const df = posTemplateStats.bySize[n];
+            const total = posTemplateStats.total;
+
+            const shared = [];
+            a.forEach((_, template) => {
+                if (!b.has(template)) return;
+                const d = df.get(template) || 0;
+                shared.push({ template, df: d, weight: Math.log((total + 1) / (d + 1)) + 1 });
+            });
+            shared.sort((x, y) => x.df - y.df);
+
+            // Find the words the first occurrence of each template covers, in each text.
+            const exampleFor = (text, template) => {
+                const tags = pennTagSequence(text);
+                const words = String(text).split(/\s+/);
+                const wanted = template.split(' ');
+                for (let i = 0; i + wanted.length <= tags.length; i++) {
+                    let match = true;
+                    for (let k = 0; k < wanted.length; k++) if (tags[i + k] !== wanted[k]) { match = false; break; }
+                    if (match) return words.slice(i, i + wanted.length).join(' ');
+                }
+                return '';
+            };
+
+            return shared.slice(0, limit).map(s => ({
+                ...s, exampleA: exampleFor(text1, s.template), exampleB: exampleFor(text2, s.template)
+            }));
+        }
+
+        // Passage correspondences. Returns both the best match for each passage and the ordered
+        // alignment, which are different claims: the first says the same ground is covered, the
+        // second that it is covered in the same sequence.
+        function passageAlignmentDetails(text1, text2, limit = 6) {
+            if (!semanticIndex) return null;
+            const A = semanticIndex.byText.get(text1), B = semanticIndex.byText.get(text2);
+            if (!A || !B || !A.length || !B.length) return null;
+
+            const chunksA = semanticChunks(text1), chunksB = semanticChunks(text2);
+            const S = A.map(a => B.map(b => dotProduct(a, b)));
+
+            const m = A.length, n = B.length;
+            const D = Array.from({ length: m + 1 }, () => new Float64Array(n + 1));
+            const back = Array.from({ length: m + 1 }, () => new Uint8Array(n + 1));
+            for (let i = 1; i <= m; i++) {
+                for (let j = 1; j <= n; j++) {
+                    const diagonal = D[i-1][j-1] + Math.max(0, S[i-1][j-1]);
+                    const up = D[i-1][j], left = D[i][j-1];
+                    if (diagonal >= up && diagonal >= left) { D[i][j] = diagonal; back[i][j] = 1; }
+                    else if (up >= left) { D[i][j] = up; back[i][j] = 2; }
+                    else { D[i][j] = left; back[i][j] = 3; }
+                }
+            }
+            const ordered = [];
+            let i = m, j = n;
+            while (i > 0 && j > 0) {
+                if (back[i][j] === 1) {
+                    if (S[i-1][j-1] > 0) ordered.unshift({ a: i-1, b: j-1, score: S[i-1][j-1],
+                        textA: chunksA[i-1] || '', textB: chunksB[j-1] || '' });
+                    i--; j--;
+                } else if (back[i][j] === 2) i--; else j--;
+            }
+
+            const best = A.map((_, ia) => {
+                let bestJ = -1, bestScore = -Infinity;
+                S[ia].forEach((v, jb) => { if (v > bestScore) { bestScore = v; bestJ = jb; } });
+                return { a: ia, b: bestJ, score: bestScore, textA: chunksA[ia] || '', textB: chunksB[bestJ] || '' };
+            }).sort((x, y) => y.score - x.score).slice(0, limit);
+
+            return { ordered: ordered.slice(0, limit), best, chunkCountA: m, chunkCountB: n };
+        }
+
+        // ============================================================================
         // METRIC FAMILIES
         // ============================================================================
         //
@@ -13192,6 +13649,9 @@
             }
             console.log(`[COHORT] combined score centred at ${combinedScale.center.toFixed(4)}, scaled by ${combinedScale.scale.toFixed(4)} (${combinedScale.method})`);
 
+            // Kept for the post-analysis diagnosis, which needs the individual metric values.
+            window.__lastPairMetrics = pairMetrics;
+
             // Rank by the cohort-relative score: it is the one that answers "are these two more
             // alike than the cohort explains", which raw similarity cannot.
             updateProgress(totalPairs, totalPairs, 'Sorting results...', 'Please wait...');
@@ -13229,6 +13689,112 @@
             renderSimilarityPairs(filteredPairs);
             renderFlaggedRespondents(filteredPairs);
             saveSession();
+        }
+
+        // What the analysis learned about its own measures.
+        function renderSignalReport() {
+            const host = document.getElementById('signalReport');
+            if (!host) return;
+
+            const diagnosis = diagnoseMetricSignal();
+            if (!diagnosis) { host.innerHTML = ''; return; }
+
+            const referenceCount = responses.filter(r => r.isReference).length;
+            const strong = diagnosis.rows.filter(r => r.reach >= 4 && !r.duplicateOf);
+            const weak = diagnosis.rows.filter(r => r.reach > 0 && r.reach < 2);
+            const silent = diagnosis.rows.filter(r => r.reach === 0);
+            const duplicates = diagnosis.rows.filter(r => r.duplicateOf);
+            const name = id => METRIC_DISPLAY_NAMES[id] || id;
+
+            const suggested = suggestFamilyWeights(diagnosis);
+            window.__suggestedWeights = suggested;
+
+            const list = (items, render) => items.slice(0, 6).map(render).join(', ') +
+                (items.length > 6 ? `, and ${items.length - 6} more` : '');
+
+            host.innerHTML = `
+            <details open style="border:1px solid #d5c9e0; border-left:4px solid #57068C; border-radius:6px; background:#faf7fd;">
+                <summary style="cursor:pointer; padding:11px 13px; font-weight:600; color:#57068C;">
+                    What carried signal in this analysis
+                </summary>
+                <div style="padding:0 13px 14px 13px; font-size:13px; color:#444;">
+                    <p style="margin:0 0 10px 0;">
+                        Every measure ran on all ${diagnosis.pairs.toLocaleString()} pairs. Which ones matter depends on
+                        the assignment, so rather than asking beforehand, here is what actually happened. A measure is
+                        judged on whether it singles anybody out: one that spreads every pair evenly across its range
+                        has told you nothing, however much it varies.
+                    </p>
+
+                    ${strong.length ? `<p style="margin:0 0 8px 0;">
+                        <strong style="color:#1e5631;">Carried the most signal:</strong>
+                        ${list(strong, r => `${escapeHtml(name(r.metric))} <span style="color:#888;">(top pair ${r.reach.toFixed(1)} SD out)</span>`)}.
+                    </p>` : `<p style="margin:0 0 8px 0; color:#7d6608;">
+                        No measure separated the top pairs sharply. Either this cohort is genuinely uniform, or the
+                        responses are too short for these measures to work on.
+                    </p>`}
+
+                    ${duplicates.length ? `<p style="margin:0 0 8px 0;">
+                        <strong>Added nothing new:</strong> ${list(duplicates, r => `${escapeHtml(name(r.metric))} <span style="color:#888;">(ranks pairs almost identically to ${escapeHtml(name(r.duplicateOf))})</span>`)}.
+                        Grouping into families already stops these from voting twice.
+                    </p>` : ''}
+
+                    ${weak.length ? `<p style="margin:0 0 8px 0;">
+                        <strong>Distinguished nobody:</strong> ${list(weak, r => escapeHtml(name(r.metric)))}.
+                    </p>` : ''}
+
+                    ${silent.length ? `<p style="margin:0 0 8px 0;">
+                        <strong>Produced no usable values:</strong> ${list(silent, r => `${escapeHtml(name(r.metric))} <span style="color:#888;">(${escapeHtml(r.verdict)})</span>`)}.
+                    </p>` : ''}
+
+                    ${referenceCount >= 3 ? `
+                    <div style="margin-top:12px; padding:10px; background:#eafaf1; border-radius:5px;">
+                        <strong>${referenceCount} reference texts are flagged.</strong> Fitting against them is a better
+                        answer than the reach figures above, because it measures what separates your references from the
+                        class rather than what merely stands out.
+                        <div style="margin-top:8px;">
+                            <button onclick="fitFamilyWeightsFromReferences(); renderSignalReport();"
+                                style="padding:7px 15px; background:#1e5631; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px; font-weight:600;">
+                                Fit weights from references
+                            </button>
+                        </div>
+                        <div id="fitWeightsNote" style="font-size:12px; color:#666; margin-top:7px;"></div>
+                    </div>` : `
+                    <div style="margin-top:12px; padding:10px; background:#fef5e7; border-radius:5px; color:#7d6608;">
+                        <strong>No reference texts flagged.</strong> Generate three or more chatbot answers to this same
+                        prompt, add them to the CSV with a reference column, and the tool can fit its weights to what
+                        actually separates them from your class - a better answer than any of the suggestions below.
+                    </div>`}
+
+                    ${suggested ? `
+                    <div style="margin-top:12px;">
+                        <strong>Suggested weights from this analysis:</strong>
+                        <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap;">
+                            ${METRIC_FAMILIES.map(f => `
+                                <span style="background:white; border:1px solid #d5c9e0; border-radius:4px; padding:4px 9px; font-size:12px;">
+                                    ${escapeHtml(f.label)} <strong>${(suggested[f.id] ?? 0).toFixed(1)}</strong>
+                                </span>`).join('')}
+                        </div>
+                        <button onclick="applySuggestedWeights()"
+                            style="padding:7px 15px; background:#57068C; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px; font-weight:600;">
+                            Apply these weights
+                        </button>
+                        <span id="suggestedWeightsNote" style="font-size:12px; color:#666; margin-left:9px;"></span>
+                    </div>` : ''}
+                </div>
+            </details>`;
+        }
+
+        function applySuggestedWeights() {
+            const suggested = window.__suggestedWeights;
+            if (!suggested) return;
+            METRIC_FAMILIES.forEach(f => {
+                if (typeof suggested[f.id] === 'number') familyWeights[f.id] = suggested[f.id];
+            });
+            renderFamilyWeightPanel();
+            const rescored = rescoreFromFamilyWeights();
+            saveSession();
+            const note = document.getElementById('suggestedWeightsNote');
+            if (note) note.textContent = rescored ? 'Applied, and the pairs have been re-ranked.' : 'Applied.';
         }
 
         // Name any selected metric that gave every pair the same value, so a metric silently
@@ -13299,6 +13865,7 @@
         }
 
         function renderSimilarityPairs(pairs) {
+            renderSignalReport();
             renderInertMetricNotice();
             const container = document.getElementById('similarityPairsList');
             renderedPairs = pairs;
@@ -13704,60 +14271,288 @@
             }
         }
 
+        // One section per family, strongest first, each rendering its evidence in the shape that
+        // suits it: spans for the families you can point at in the text, correspondences for the
+        // passage ones, rates against the class for punctuation, tag patterns for syntax.
+        function renderFamilyEvidence(pair, prefetched) {
+            const familyZ = pair.familyZ || {};
+            const present = METRIC_FAMILIES.filter(f => typeof familyZ[f.id] === 'number');
+            if (!present.length) {
+                return `<p class="empty" style="color:#888;">No family scores were recorded for this pair. Re-run the analysis to produce them.</p>`;
+            }
+            const ordered = present.slice().sort((x, y) => familyZ[y.id] - familyZ[x.id]);
+
+            const table = (headers, rows) => `
+                <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px;">
+                    <thead><tr style="background:#f4f0f8;">
+                        ${headers.map(h => `<th style="padding:7px 9px; text-align:${h.num ? 'right' : 'left'}; font-weight:600;">${escapeHtml(h.label)}</th>`).join('')}
+                    </tr></thead>
+                    <tbody>${rows.map((r, i) => `
+                        <tr style="border-bottom:1px solid #eee; background:${i % 2 ? '#fff' : '#fafafa'};">
+                            ${r.map((c, k) => `<td style="padding:7px 9px; text-align:${headers[k].num ? 'right' : 'left'}; ${headers[k].mono ? 'font-family:monospace; font-size:12px;' : ''}">${c}</td>`).join('')}
+                        </tr>`).join('')}
+                    </tbody>
+                </table>`;
+
+            const nothing = (msg) => `<p style="margin:8px 0 0 0; font-size:13px; color:#888;">${msg}</p>`;
+
+            const evidenceFor = (familyId) => {
+                if (familyId === 'content') {
+                    const parts = [];
+                    const { rarePhrases, entities, vocabulary } = prefetched;
+                    if (rarePhrases.shared && rarePhrases.shared.length) {
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Shared phrases, rarest first</h5>` +
+                            table([{label:'Phrase', mono:true}, {label:'Responses containing it', num:true}],
+                                rarePhrases.shared.slice(0, 12).map(s =>
+                                    [escapeHtml(s.ngram), `${s.df} of ${rareNgramIndex ? rareNgramIndex.total : '?'}`])));
+                    }
+                    if (entities.length) {
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Shared names and figures</h5>` +
+                            table([{label:'Name or figure'}, {label:'Responses containing it', num:true}],
+                                entities.slice(0, 10).map(e =>
+                                    [escapeHtml(e.entity), `${e.df} of ${contentProfileStats ? contentProfileStats.total : '?'}`])));
+                    }
+                    if (vocabulary.length) {
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Distinctive words in common</h5>` +
+                            `<p style="margin:6px 0 0 0; font-size:13px;">` +
+                            vocabulary.slice(0, 18).map(v =>
+                                `<span style="display:inline-block; background:#eafaf1; border:1px solid #cdeedd; border-radius:3px; padding:2px 7px; margin:0 4px 4px 0;">${escapeHtml(v.word)} <span style="color:#888;">${v.df}</span></span>`).join('') +
+                            `</p><p style="margin:5px 0 0 0; font-size:11px; color:#999;">The number is how many responses in the class use that word.</p>`);
+                    }
+                    return parts.length ? parts.join('') : nothing('These two share no phrase, name or distinctive word beyond what the class shares generally.');
+                }
+
+                if (familyId === 'semantic' || familyId === 'structure') {
+                    const alignment = passageAlignmentDetails(pair.text1, pair.text2, 5);
+                    if (!alignment) return nothing('Passage embeddings were not computed for this run, so there is nothing to show here. Enable the semantic metric and re-run.');
+                    const rows = (familyId === 'structure' ? alignment.ordered : alignment.best)
+                        .filter(x => x.score > 0);
+                    if (!rows.length) return nothing('No passages line up between these two responses.');
+                    const snippet = (t) => escapeHtml(String(t).slice(0, 180)) + (String(t).length > 180 ? '…' : '');
+                    return `<p style="margin:10px 0 0 0; font-size:12px; color:#666;">${
+                        familyId === 'structure'
+                          ? 'Passages matched in order. The same passages appearing in the same sequence is a stronger claim than merely appearing.'
+                          : 'Each passage shown beside its closest counterpart, wherever it appears.'}</p>` +
+                        rows.map(r => `
+                        <div style="display:grid; grid-template-columns:1fr 62px 1fr; gap:10px; align-items:center; margin-top:9px;">
+                            <div style="font-size:12px; background:#fafafa; border:1px solid #eee; border-radius:4px; padding:7px;">${snippet(r.textA)}</div>
+                            <div style="text-align:center; font-weight:700; color:#57068C; font-size:13px;">${r.score.toFixed(2)}</div>
+                            <div style="font-size:12px; background:#fafafa; border:1px solid #eee; border-radius:4px; padding:7px;">${snippet(r.textB)}</div>
+                        </div>`).join('');
+                }
+
+                if (familyId === 'syntax') {
+                    const six = sharedPosTemplateDetails(pair.text1, pair.text2, 6, 6);
+                    const four = six.length ? [] : sharedPosTemplateDetails(pair.text1, pair.text2, 4, 6);
+                    const rows = six.length ? six : four;
+                    if (!rows.length) return nothing('No unusual sentence templates in common. Common sentence shapes are shared by almost everyone and are not counted.');
+                    return `<p style="margin:10px 0 0 0; font-size:12px; color:#666;">
+                            Shared part-of-speech sequences that are rare in this class, with the words each
+                            happens to cover. The words are not the evidence - the pattern is - so two quite
+                            different sentences can match here.
+                        </p>` +
+                        table([{label:'Tag pattern', mono:true}, {label:`In ${escapeHtml(String(pair.id1))}`}, {label:`In ${escapeHtml(String(pair.id2))}`}, {label:'Responses', num:true}],
+                            rows.map(r => [escapeHtml(r.template), escapeHtml(r.exampleA || '-'), escapeHtml(r.exampleB || '-'),
+                                           `${r.df} of ${posTemplateStats ? posTemplateStats.total : '?'}`]));
+                }
+
+                if (familyId === 'style') {
+                    const { style } = prefetched;
+                    const punct = punctuationComparison(pair.text1, pair.text2, 5);
+                    const parts = [];
+                    const chips = (items, colour, note) => `<p style="margin:6px 0 0 0; font-size:13px;">` +
+                        items.map(i => `<span style="display:inline-block; background:${colour}; border-radius:3px; padding:2px 7px; margin:0 4px 4px 0;">${escapeHtml(i.key)} <span style="color:#888;">${i.df}</span></span>`).join('') +
+                        `</p><p style="margin:4px 0 0 0; font-size:11px; color:#999;">${note}</p>`;
+
+                    if (style.register.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Chatbot-register wording both used</h5>` +
+                            chips(style.register, '#fdebd0', 'The number is how many responses in the class use it. This list drifts as models change.'));
+                    if (style.transitions.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Transitions both used</h5>` +
+                            chips(style.transitions, '#e8f4fd', 'Which transitions, not how many - two writers can use the same number and share none of them.'));
+                    if (style.openers.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Sentence openings in common</h5>` +
+                            chips(style.openers, '#f0e8fd', 'How sentences begin.'));
+                    if (punct.length)
+                        parts.push(`<h5 style="margin:14px 0 0 0; font-size:13px;">Punctuation habits, against the class</h5>` +
+                            `<p style="margin:6px 0 0 0; font-size:12px; color:#666;">Nothing to highlight here - punctuation is a rate, not a passage. These are the marks where both responses depart from the class in the same direction, per 1,000 words.</p>` +
+                            table([{label:'Mark'}, {label:escapeHtml(String(pair.id1)), num:true}, {label:escapeHtml(String(pair.id2)), num:true}, {label:'Class average', num:true}],
+                                punct.map(p => [escapeHtml(p.label), p.rate1.toFixed(1), p.rate2.toFixed(1), p.classMean.toFixed(1)])));
+
+                    return parts.length ? parts.join('') : nothing('No shared style habits stand out against the class.');
+                }
+
+                if (familyId === 'surface') {
+                    const words = t => String(t).split(/\s+/).filter(Boolean).length;
+                    const sentences = t => (String(t).match(/[^.!?]+[.!?]+/g) || []).length || 1;
+                    const a = pair.text1, b = pair.text2;
+                    return `<p style="margin:10px 0 0 0; font-size:12px; color:#666;">
+                            Nothing to highlight - these are properties of each response, not shared passages.
+                            Two responses near the class average look alike here while sharing nothing, so read
+                            this as context rather than evidence.
+                        </p>` +
+                        table([{label:'Measure'}, {label:escapeHtml(String(pair.id1)), num:true}, {label:escapeHtml(String(pair.id2)), num:true}],
+                            [['Words', words(a), words(b)],
+                             ['Sentences', sentences(a), sentences(b)],
+                             ['Average sentence length', (words(a)/sentences(a)).toFixed(1), (words(b)/sentences(b)).toFixed(1)]]);
+                }
+
+                return nothing('No evidence view for this family yet.');
+            };
+
+            return ordered.map(f => {
+                const z = familyZ[f.id];
+                const strong = z >= 2, negative = z < 0;
+                const explain = FAMILY_EXPLANATIONS[f.id] || { measures: f.blurb, method: '' };
+                return `
+                <details ${strong ? 'open' : ''} style="border:1px solid ${strong ? '#e6b0aa' : '#e0e0e0'}; border-left:4px solid ${strong ? '#c0392b' : negative ? '#bdc3c7' : '#57068C'}; border-radius:5px; margin-bottom:10px; background:white;">
+                    <summary style="cursor:pointer; padding:11px 13px; display:flex; align-items:center; gap:12px;">
+                        <strong style="color:#2c3e50;">${escapeHtml(f.label)}</strong>
+                        <span style="font-weight:700; color:${strong ? '#c0392b' : negative ? '#95a5a6' : '#57068C'};">
+                            ${z >= 0 ? '+' : ''}${z.toFixed(1)} SD
+                        </span>
+                        <span style="font-size:12px; color:#888;">
+                            ${negative ? 'argues against a match' : z < 0.5 ? 'contributed little' : strong ? 'strong contributor' : 'contributed'}
+                        </span>
+                    </summary>
+                    <div style="padding:0 13px 14px 13px;">
+                        <p style="margin:0 0 6px 0; font-size:13px; color:#444;">${escapeHtml(explain.measures)}</p>
+                        <p style="margin:0 0 4px 0; font-size:12px; color:#777;"><strong>How it is detected.</strong> ${escapeHtml(explain.method)}</p>
+                        ${evidenceFor(f.id)}
+                    </div>
+                </details>`;
+            }).join('');
+        }
+
+        // The evidence view for one pair.
+        //
+        // Both texts at the top, because a reader's first question is always "what do they
+        // actually say", and a score cannot answer that. Below them, why the pair was flagged,
+        // organised by family and ordered so the strongest evidence for THIS pair comes first -
+        // which varies: one pair is flagged for shared phrasing, another for taking the same
+        // route through an argument while sharing no wording at all.
+        //
+        // Each family reports in the form that is honest for it. Only the families whose
+        // evidence is visible in the text get a highlight layer; the others say plainly that
+        // there is nothing to point at and give their evidence another way.
         async function showPairComparison(pair) {
             const modal = document.getElementById('comparisonModal');
             const title = document.getElementById('modalTitle');
             const body = document.getElementById('modalBody');
 
-            // Clear any stored comparison pair (we're viewing a fresh comparison)
-            window.currentComparisonPair = null;
+            window.currentComparisonPair = pair;
 
-            title.textContent = `Respondent ${pair.id1} vs Respondent ${pair.id2}`;
+            const adjusted = pair.adjustedScore ?? 0;
+            title.textContent = `Respondent ${pair.id1} and Respondent ${pair.id2}`;
 
-            // Find shared phrases
-            const sharedPhrases = getCommonNgrams(pair.text1, pair.text2);
+            // Highlight layers, in the order a reader should try them.
+            const rarePhrases = sharedRareNgramDetails(pair.text1, pair.text2, 60);
+            const entities = sharedEntityDetails(pair.text1, pair.text2, 40);
+            const vocabulary = sharedVocabularyDetails(pair.text1, pair.text2, 40);
+            const style = sharedStyleDetails(pair.text1, pair.text2, 30);
 
-            // Highlight shared phrases in both texts
-            const highlighted1 = highlightSharedPhrases(pair.text1, sharedPhrases);
-            const highlighted2 = highlightSharedPhrases(pair.text2, sharedPhrases);
+            window.__highlightLayers = {
+                phrases: { label: 'Shared rare phrases', className: 'hl-phrase',
+                           terms: (rarePhrases.shared || []).map(s => s.ngram) },
+                names:   { label: 'Shared names and figures', className: 'hl-entity',
+                           terms: entities.map(e => e.entity) },
+                words:   { label: 'Distinctive shared words', className: 'hl-word',
+                           terms: vocabulary.map(v => v.word) },
+                register:{ label: 'Chatbot register', className: 'hl-register',
+                           terms: style.register.map(r => r.key) }
+            };
+            window.__pairForHighlight = pair;
 
-            // Generate metric badges (await since it's now async)
-            const metricBadges = await generateMetricBadges(pair.text1, pair.text2, pair.similarity, pair.id1, pair.id2);
+            const available = Object.entries(window.__highlightLayers).filter(([, l]) => l.terms.length);
+            const initial = available.length ? available[0][0] : 'none';
+
+            const layerButtons = available.map(([key, layer]) => `
+                <button onclick="applyHighlightLayer('${key}')" id="hlBtn_${key}"
+                    style="padding: 5px 11px; border: 1px solid #d5c9e0; background: white; border-radius: 4px;
+                           cursor: pointer; font-size: 12px;">
+                    ${escapeHtml(layer.label)} (${layer.terms.length})
+                </button>`).join('') + `
+                <button onclick="applyHighlightLayer('none')" id="hlBtn_none"
+                    style="padding: 5px 11px; border: 1px solid #d5c9e0; background: white; border-radius: 4px;
+                           cursor: pointer; font-size: 12px;">No highlighting</button>`;
+
+            const evidence = renderFamilyEvidence(pair, { rarePhrases, entities, vocabulary, style });
 
             body.innerHTML = `
-                <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; justify-content: center;">
-                    ${metricBadges}
+                <div style="background: ${adjusted >= 2 ? '#fdecea' : '#f4f6f7'}; padding: 12px 15px; border-radius: 6px; margin-bottom: 14px;">
+                    <span style="font-size: 26px; font-weight: 700; color: ${adjusted >= 3 ? '#c0392b' : adjusted >= 2 ? '#d35400' : '#5d6d7e'};">
+                        ${adjusted >= 0 ? '+' : ''}${adjusted.toFixed(1)} SD
+                    </span>
+                    <span style="font-size: 13px; color: #555; margin-left: 10px;">
+                        above what the rest of this cohort would predict for these two responses.
+                        Raw similarity ${(pair.similarity * 100).toFixed(1)}%.
+                    </span>
+                    <div style="font-size: 12px; color: #888; margin-top: 6px;">
+                        A ranking within this cohort, not a probability and not a finding of misconduct.
+                        Every response appears in many pairs, so these values are not independent.
+                    </div>
                 </div>
+
+                ${available.length ? `
+                <div style="display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+                    <span style="font-size: 12px; color: #666; font-weight: 600;">Highlight:</span>
+                    ${layerButtons}
+                </div>` : `
+                <div style="font-size: 12px; color: #888; margin-bottom: 10px;">
+                    Nothing in these two texts can be highlighted - they share no rare phrase, name or
+                    distinctive word. Whatever flagged this pair is in the sections below.
+                </div>`}
 
                 <div class="comparison-grid">
                     <div class="comparison-box">
-                        <div class="comparison-header">Respondent ${pair.id1}</div>
-                        <div class="comparison-text">${highlighted1}</div>
+                        <div class="comparison-header">Respondent ${escapeHtml(String(pair.id1))}</div>
+                        <div class="comparison-text" id="pairTextA">${escapeHtml(pair.text1)}</div>
                     </div>
                     <div class="comparison-box">
-                        <div class="comparison-header">Respondent ${pair.id2}</div>
-                        <div class="comparison-text">${highlighted2}</div>
+                        <div class="comparison-header">Respondent ${escapeHtml(String(pair.id2))}</div>
+                        <div class="comparison-text" id="pairTextB">${escapeHtml(pair.text2)}</div>
                     </div>
                 </div>
 
-                ${sharedPhrases.length > 0 ? `
-                    <div class="shared-phrases-box">
-                        <h4>Shared Phrases (${sharedPhrases.length})
-                            <span style="font-size: 11px; color: #666; font-weight: normal;">
-                                - Yellow = exact, Orange = fuzzy (paraphrase)
-                            </span>
-                        </h4>
-                        ${sharedPhrases.slice(0, 15).map(p =>
-                            `<span class="phrase-chip" style="background: ${p.type === 'exact' ? '#ffeb3b' : '#ffe0b2'}; border: 1px solid ${p.type === 'exact' ? '#ffc107' : '#ff9800'};">
-                                "${escapeHtml(p.text)}" (${p.length} words${p.type === 'fuzzy' ? ', ~' : ''})
-                            </span>`
-                        ).join('')}
-                        ${sharedPhrases.length > 15 ? `<span class="phrase-chip">+${sharedPhrases.length - 15} more</span>` : ''}
-                    </div>
-                ` : ''}
+                <h3 style="margin: 24px 0 4px 0; color: #57068C;">Why these two were flagged</h3>
+                <p style="margin: 0 0 14px 0; font-size: 13px; color: #666;">
+                    Strongest evidence first. Each score is how far this pair sits above the cohort on that
+                    kind of evidence; a family near zero contributed nothing, and a negative one argues
+                    against a match.
+                </p>
+                ${evidence}
             `;
 
             modal.style.display = 'block';
+            applyHighlightLayer(initial);
+        }
+
+        // Swap the highlight layer without rebuilding the modal.
+        function applyHighlightLayer(key) {
+            const pair = window.__pairForHighlight;
+            const layers = window.__highlightLayers || {};
+            if (!pair) return;
+
+            const a = document.getElementById('pairTextA'), b = document.getElementById('pairTextB');
+            if (!a || !b) return;
+
+            const layer = layers[key];
+            if (!layer) {
+                a.innerHTML = escapeHtml(pair.text1);
+                b.innerHTML = escapeHtml(pair.text2);
+            } else {
+                a.innerHTML = highlightTerms(pair.text1, layer.terms, layer.className);
+                b.innerHTML = highlightTerms(pair.text2, layer.terms, layer.className);
+            }
+
+            Object.keys(layers).concat('none').forEach(k => {
+                const btn = document.getElementById('hlBtn_' + k);
+                if (!btn) return;
+                const on = k === key;
+                btn.style.background = on ? '#57068C' : 'white';
+                btn.style.color = on ? 'white' : '#333';
+                btn.style.borderColor = on ? '#57068C' : '#d5c9e0';
+            });
         }
 
         function getCommonNgrams(text1, text2) {
