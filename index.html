@@ -918,19 +918,24 @@
                     Analyze corpus-internal homogeneity by measuring pairwise similarity between responses.
                     For detecting unusual convergence in survey responses, essays, homework exercises, or any other corpus of texts.
                 </p>
-                <button onclick="showMetricSelection()"
+                <button onclick="document.getElementById('csvFile').click()"
                     style="padding: 16px 40px; background: #57068C; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 18px; box-shadow: 0 4px 12px rgba(87, 6, 140, 0.3); transition: all 0.3s;"
                     onmouseover="this.style.background='#6d0aac'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(87, 6, 140, 0.4)'"
                     onmouseout="this.style.background='#57068C'; this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(87, 6, 140, 0.3)'">
-                    <i class="fas fa-sliders-h"></i> Choose Similarity Metrics
+                    <i class="fas fa-file-csv"></i> Upload a CSV
                 </button>
                 <div style="margin-top: 30px; padding: 20px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3; text-align: left;">
-                    <h4 style="margin-top: 0; color: #1565c0; font-size: 16px;">Getting Started</h4>
+                    <h4 style="margin-top: 0; color: #1565c0; font-size: 16px;">How this works</h4>
                     <ol style="color: #666; font-size: 14px; line-height: 1.8; margin: 10px 0;">
-                        <li><strong>Choose which similarity metrics</strong> you want to use (24 available)</li>
-                        <li><strong>Upload your CSV file</strong> with text responses</li>
-                        <li><strong>Review results</strong> showing suspicious similarity patterns</li>
+                        <li><strong>Upload your CSV.</strong> One response per row.</li>
+                        <li><strong>Choose which column to analyse</strong> - you will see a sample of each.</li>
+                        <li><strong>Every measure runs.</strong> Afterwards the tool reports which ones actually
+                            carried signal in your data and suggests weights, so you are not asked to guess
+                            beforehand.</li>
                     </ol>
+                    <p style="color:#777; font-size:13px; margin:10px 0 0 0;">
+                        Nothing is uploaded anywhere. The analysis runs entirely in this page.
+                    </p>
                 </div>
             </div>
         </div>
@@ -967,6 +972,32 @@
                         <i class="fas fa-edit"></i> Change Metrics
                     </button>
                 </div>
+            </div>
+        </div>
+
+        <!-- Column chooser: shown after a CSV is parsed, before anything is analysed. -->
+        <div id="columnChooserScreen" style="display: none; padding: 30px 20px; max-width: 980px; margin: 0 auto;">
+            <h2 style="color: #57068C; font-size: 26px; margin-bottom: 6px;">Which column holds the responses?</h2>
+            <p id="columnChooserSummary" style="color: #666; font-size: 14px; margin-bottom: 20px;"></p>
+            <div id="columnChooserList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+
+            <div id="referenceChooser" style="margin-top: 24px; padding: 14px; background: #f6f0fa; border: 1px solid #d5c9e0; border-radius: 6px;">
+                <strong style="color: #57068C; font-size: 14px;">Reference texts (optional)</strong>
+                <p style="font-size: 13px; color: #666; margin: 6px 0 8px 0;">
+                    If your CSV marks chatbot-written texts in a column, say which. With three or more the tool
+                    can fit its own weights instead of guessing which measures matter for this assignment.
+                </p>
+                <select id="referenceColumnChooser" style="padding: 6px 10px; font-size: 13px;"></select>
+            </div>
+
+            <div style="margin-top: 24px; display: flex; gap: 12px; align-items: center;">
+                <button id="runAnalysisBtn" onclick="startAnalysisFromChooser()"
+                    style="padding: 13px 30px; background: #57068C; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 15px;">
+                    Analyse this column
+                </button>
+                <span style="font-size: 12px; color: #888;">
+                    Every measure runs. You will be told afterwards which ones mattered.
+                </span>
             </div>
         </div>
 
@@ -2318,6 +2349,7 @@
                         <span class="panel-info" id="pairCountDisplay">0 pairs above threshold</span>
                     </div>
                     <div class="panel-content">
+                        <div id="signalReport" style="margin: 0 0 14px 0;"></div>
                         <div id="inertMetricNotice" style="display: none; margin: 0 0 12px 0; padding: 10px 12px; background: #fef5e7; border-left: 4px solid #f39c12; border-radius: 4px; font-size: 13px; color: #7d6608;"></div>
                         <div id="similarityPairsList">
                             <p style="color: #999; text-align: center; padding: 40px;">
@@ -3802,12 +3834,93 @@
                 console.log(`Reference column detected: "${headers[referenceColumn]}" (${countFlaggedRows()} rows flagged)`);
             }
 
-            // Hide welcome/upload screens and show app interface
-            document.getElementById('welcomeScreen').style.display = 'none';
-            document.getElementById('uploadPromptScreen').style.display = 'none';
+            // Stop here and ask which column to analyse.
+            //
+            // The column is guessed by content and offered as the default, but it is shown
+            // rather than assumed: a guess that silently picks the wrong column produces a page
+            // of plausible scores that mean nothing, which is worse than asking. A one-word
+            // Decision column in a real export did exactly that.
+            showColumnChooser();
+        }
+
+        function showColumnChooser() {
+            ['welcomeScreen', 'uploadPromptScreen', 'controls', 'dashboard'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+            const screen = document.getElementById('columnChooserScreen');
+            if (screen) screen.style.display = 'block';
+
+            renderColumnChooser();
+        }
+
+        function renderColumnChooser() {
+            const list = document.getElementById('columnChooserList');
+            const summary = document.getElementById('columnChooserSummary');
+            if (!list) return;
+
+            const sample = csvData.slice(0, 200);
+            const stats = headers.map((header, i) => {
+                const values = sample.map(r => String(r[i] ?? '').trim());
+                const nonEmpty = values.filter(Boolean);
+                const lengths = nonEmpty.map(v => v.split(/\s+/).length).sort((a, b) => a - b);
+                const preview = nonEmpty.find(v => v.length > 20) || nonEmpty[0] || '';
+                return {
+                    index: i, header: header || `Column ${i + 1}`,
+                    filled: nonEmpty.length, total: sample.length,
+                    medianWords: lengths.length ? lengths[lengths.length >> 1] : 0,
+                    preview: preview.slice(0, 190)
+                };
+            });
+
+            if (summary) {
+                summary.textContent =
+                    `${csvData.length} row${csvData.length === 1 ? '' : 's'} read from the file. ` +
+                    `The column with the most prose is selected below; change it if that is not the one you mean.`;
+            }
+
+            list.innerHTML = stats.map(s => {
+                const chosen = s.index === currentColumn;
+                const tooShort = s.medianWords < 5;
+                return `
+                <label style="display:block; cursor:pointer; padding:12px 14px; border:2px solid ${chosen ? '#57068C' : '#e0e0e0'};
+                              border-radius:6px; background:${chosen ? '#faf7fd' : 'white'};">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <input type="radio" name="responseColumn" value="${s.index}" ${chosen ? 'checked' : ''}
+                               onchange="chooseResponseColumn(${s.index})">
+                        <strong style="color:#2c3e50;">${escapeHtml(s.header)}</strong>
+                        <span style="font-size:12px; color:${tooShort ? '#c0392b' : '#888'};">
+                            ${s.medianWords} word${s.medianWords === 1 ? '' : 's'} typical · ${s.filled} of ${s.total} filled
+                            ${tooShort ? ' · too short to analyse meaningfully' : ''}
+                        </span>
+                    </div>
+                    ${s.preview ? `<div style="margin:7px 0 0 27px; font-size:12px; color:#666; font-style:italic;">${escapeHtml(s.preview)}${s.preview.length >= 190 ? '…' : ''}</div>` : ''}
+                </label>`;
+            }).join('');
+
+            const refSelect = document.getElementById('referenceColumnChooser');
+            if (refSelect) {
+                refSelect.innerHTML = '<option value="-1">None</option>' +
+                    headers.map((h, i) => i === 0 ? '' :
+                        `<option value="${i}"${i === referenceColumn ? ' selected' : ''}>${escapeHtml(h || 'Column ' + (i + 1))}</option>`).join('');
+                refSelect.onchange = (e) => { referenceColumn = parseInt(e.target.value); renderColumnChooser(); };
+            }
+        }
+
+        function chooseResponseColumn(index) {
+            currentColumn = index;
+            const select = document.getElementById('columnSelect');
+            if (select) select.value = String(index);
+            renderColumnChooser();
+        }
+
+        function startAnalysisFromChooser() {
+            const screen = document.getElementById('columnChooserScreen');
+            if (screen) screen.style.display = 'none';
             document.getElementById('controls').style.display = 'block';
             document.getElementById('dashboard').style.display = 'block';
 
+            populateReferenceColumnSelect();
             analyzeCorpus();
             saveSession();
         }
@@ -4361,8 +4474,10 @@
             }
         }
 
+        // Kept for the header menu. The settings dialog is no longer a step anyone has to pass
+        // through before analysing - every measure runs, and the tool reports afterwards which
+        // ones carried signal.
         function showMetricSelection() {
-            // Open metric settings modal from welcome screen
             toggleMetricSettings();
         }
 
@@ -9567,6 +9682,114 @@
         }
 
         // ============================================================================
+        // WHICH MEASURES CARRIED SIGNAL
+        // ============================================================================
+        //
+        // Asking someone to pick metrics before running anything asks them to guess. Which
+        // measures matter depends on the assignment: a close-ended prompt makes lexical overlap
+        // useless, short answers give the entity measures nothing to work with, a cohort that
+        // writes nothing chatbot-like leaves the register markers silent. None of that is
+        // knowable in advance, and all of it is visible afterwards.
+        //
+        // So everything runs, and this reports what happened. With reference texts the honest
+        // answer comes from fitting against them. Without, a measure is judged on whether it
+        // singles anybody out: one that spreads every pair evenly across its range has told you
+        // nothing, however much variance it has. The diagnostic is how far the top pairs sit
+        // above the typical pair, in robust standard deviations.
+
+        function diagnoseMetricSignal() {
+            if (!allSimilarityPairs.length) return null;
+
+            const pairsWithMetrics = window.__lastPairMetrics || [];
+            if (!pairsWithMetrics.length) return null;
+
+            const selected = getSelectedMetrics();
+            const rows = [];
+
+            selected.forEach(metric => {
+                const values = pairsWithMetrics
+                    .map(p => p.metrics[metric])
+                    .filter(v => typeof v === 'number' && isFinite(v));
+                if (values.length < 5) {
+                    rows.push({ metric, verdict: 'no values', reach: 0 });
+                    return;
+                }
+
+                const scale = robustScale(values);
+                if (!scale.scale) {
+                    rows.push({ metric, verdict: 'identical for every pair', reach: 0 });
+                    return;
+                }
+
+                // How far out do the most extreme pairs sit? A measure that singles a handful of
+                // pairs out is informative here; one where everything lands within a couple of
+                // deviations has ranked the cohort without distinguishing anyone.
+                const z = values.map(v => (v - scale.center) / scale.scale).sort((a, b) => b - a);
+                const reach = z[0];
+                const top1pct = z[Math.max(0, Math.floor(z.length * 0.01))];
+
+                let verdict;
+                if (reach >= 8) verdict = 'singles out a few pairs sharply';
+                else if (reach >= 4) verdict = 'separates the top pairs';
+                else if (reach >= 2) verdict = 'weak separation';
+                else verdict = 'does not distinguish anyone';
+
+                rows.push({ metric, reach, top1pct, verdict, family: FAMILY_OF_METRIC[metric] || '-' });
+            });
+
+            // Redundancy: within a family, a metric that ranks pairs almost identically to a
+            // stronger sibling is adding a vote, not information.
+            const rank = (metric) => {
+                const vals = pairsWithMetrics.map(p => p.metrics[metric]);
+                const order = vals.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+                const r = new Array(vals.length);
+                order.forEach(([, i], k) => { r[i] = k; });
+                return r;
+            };
+            const corr = (a, b) => {
+                const n = a.length, ma = (n-1)/2, mb = (n-1)/2;
+                let num = 0, da = 0, db = 0;
+                for (let i = 0; i < n; i++) { const x = a[i]-ma, y = b[i]-mb; num += x*y; da += x*x; db += y*y; }
+                return (da && db) ? num/Math.sqrt(da*db) : 0;
+            };
+            const usable = rows.filter(r => r.reach > 0).sort((x, y) => y.reach - x.reach);
+            const ranks = {};
+            usable.forEach(r => { try { ranks[r.metric] = rank(r.metric); } catch (e) {} });
+            usable.forEach((r, i) => {
+                for (let j = 0; j < i; j++) {
+                    const other = usable[j];
+                    if (other.family !== r.family || !ranks[r.metric] || !ranks[other.metric]) continue;
+                    if (corr(ranks[r.metric], ranks[other.metric]) > 0.95) {
+                        r.duplicateOf = other.metric;
+                        break;
+                    }
+                }
+            });
+
+            return { rows: rows.sort((x, y) => y.reach - x.reach), pairs: pairsWithMetrics.length };
+        }
+
+        // Suggested family weights from the diagnosis: a family is worth as much as the reach of
+        // its best non-duplicate measure, rescaled so the strongest family sits at 2.0.
+        function suggestFamilyWeights(diagnosis) {
+            if (!diagnosis) return null;
+            const best = {};
+            diagnosis.rows.forEach(r => {
+                if (!r.family || r.family === '-' || r.duplicateOf) return;
+                best[r.family] = Math.max(best[r.family] || 0, r.reach);
+            });
+            const peak = Math.max(...Object.values(best), 0);
+            if (!peak) return null;
+
+            const weights = {};
+            METRIC_FAMILIES.forEach(f => {
+                const reach = best[f.id] || 0;
+                weights[f.id] = Math.round((2 * reach / peak) * 10) / 10;
+            });
+            return weights;
+        }
+
+        // ============================================================================
         // EVIDENCE RENDERING
         // ============================================================================
 
@@ -13426,6 +13649,9 @@
             }
             console.log(`[COHORT] combined score centred at ${combinedScale.center.toFixed(4)}, scaled by ${combinedScale.scale.toFixed(4)} (${combinedScale.method})`);
 
+            // Kept for the post-analysis diagnosis, which needs the individual metric values.
+            window.__lastPairMetrics = pairMetrics;
+
             // Rank by the cohort-relative score: it is the one that answers "are these two more
             // alike than the cohort explains", which raw similarity cannot.
             updateProgress(totalPairs, totalPairs, 'Sorting results...', 'Please wait...');
@@ -13463,6 +13689,112 @@
             renderSimilarityPairs(filteredPairs);
             renderFlaggedRespondents(filteredPairs);
             saveSession();
+        }
+
+        // What the analysis learned about its own measures.
+        function renderSignalReport() {
+            const host = document.getElementById('signalReport');
+            if (!host) return;
+
+            const diagnosis = diagnoseMetricSignal();
+            if (!diagnosis) { host.innerHTML = ''; return; }
+
+            const referenceCount = responses.filter(r => r.isReference).length;
+            const strong = diagnosis.rows.filter(r => r.reach >= 4 && !r.duplicateOf);
+            const weak = diagnosis.rows.filter(r => r.reach > 0 && r.reach < 2);
+            const silent = diagnosis.rows.filter(r => r.reach === 0);
+            const duplicates = diagnosis.rows.filter(r => r.duplicateOf);
+            const name = id => METRIC_DISPLAY_NAMES[id] || id;
+
+            const suggested = suggestFamilyWeights(diagnosis);
+            window.__suggestedWeights = suggested;
+
+            const list = (items, render) => items.slice(0, 6).map(render).join(', ') +
+                (items.length > 6 ? `, and ${items.length - 6} more` : '');
+
+            host.innerHTML = `
+            <details open style="border:1px solid #d5c9e0; border-left:4px solid #57068C; border-radius:6px; background:#faf7fd;">
+                <summary style="cursor:pointer; padding:11px 13px; font-weight:600; color:#57068C;">
+                    What carried signal in this analysis
+                </summary>
+                <div style="padding:0 13px 14px 13px; font-size:13px; color:#444;">
+                    <p style="margin:0 0 10px 0;">
+                        Every measure ran on all ${diagnosis.pairs.toLocaleString()} pairs. Which ones matter depends on
+                        the assignment, so rather than asking beforehand, here is what actually happened. A measure is
+                        judged on whether it singles anybody out: one that spreads every pair evenly across its range
+                        has told you nothing, however much it varies.
+                    </p>
+
+                    ${strong.length ? `<p style="margin:0 0 8px 0;">
+                        <strong style="color:#1e5631;">Carried the most signal:</strong>
+                        ${list(strong, r => `${escapeHtml(name(r.metric))} <span style="color:#888;">(top pair ${r.reach.toFixed(1)} SD out)</span>`)}.
+                    </p>` : `<p style="margin:0 0 8px 0; color:#7d6608;">
+                        No measure separated the top pairs sharply. Either this cohort is genuinely uniform, or the
+                        responses are too short for these measures to work on.
+                    </p>`}
+
+                    ${duplicates.length ? `<p style="margin:0 0 8px 0;">
+                        <strong>Added nothing new:</strong> ${list(duplicates, r => `${escapeHtml(name(r.metric))} <span style="color:#888;">(ranks pairs almost identically to ${escapeHtml(name(r.duplicateOf))})</span>`)}.
+                        Grouping into families already stops these from voting twice.
+                    </p>` : ''}
+
+                    ${weak.length ? `<p style="margin:0 0 8px 0;">
+                        <strong>Distinguished nobody:</strong> ${list(weak, r => escapeHtml(name(r.metric)))}.
+                    </p>` : ''}
+
+                    ${silent.length ? `<p style="margin:0 0 8px 0;">
+                        <strong>Produced no usable values:</strong> ${list(silent, r => `${escapeHtml(name(r.metric))} <span style="color:#888;">(${escapeHtml(r.verdict)})</span>`)}.
+                    </p>` : ''}
+
+                    ${referenceCount >= 3 ? `
+                    <div style="margin-top:12px; padding:10px; background:#eafaf1; border-radius:5px;">
+                        <strong>${referenceCount} reference texts are flagged.</strong> Fitting against them is a better
+                        answer than the reach figures above, because it measures what separates your references from the
+                        class rather than what merely stands out.
+                        <div style="margin-top:8px;">
+                            <button onclick="fitFamilyWeightsFromReferences(); renderSignalReport();"
+                                style="padding:7px 15px; background:#1e5631; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px; font-weight:600;">
+                                Fit weights from references
+                            </button>
+                        </div>
+                        <div id="fitWeightsNote" style="font-size:12px; color:#666; margin-top:7px;"></div>
+                    </div>` : `
+                    <div style="margin-top:12px; padding:10px; background:#fef5e7; border-radius:5px; color:#7d6608;">
+                        <strong>No reference texts flagged.</strong> Generate three or more chatbot answers to this same
+                        prompt, add them to the CSV with a reference column, and the tool can fit its weights to what
+                        actually separates them from your class - a better answer than any of the suggestions below.
+                    </div>`}
+
+                    ${suggested ? `
+                    <div style="margin-top:12px;">
+                        <strong>Suggested weights from this analysis:</strong>
+                        <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap;">
+                            ${METRIC_FAMILIES.map(f => `
+                                <span style="background:white; border:1px solid #d5c9e0; border-radius:4px; padding:4px 9px; font-size:12px;">
+                                    ${escapeHtml(f.label)} <strong>${(suggested[f.id] ?? 0).toFixed(1)}</strong>
+                                </span>`).join('')}
+                        </div>
+                        <button onclick="applySuggestedWeights()"
+                            style="padding:7px 15px; background:#57068C; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px; font-weight:600;">
+                            Apply these weights
+                        </button>
+                        <span id="suggestedWeightsNote" style="font-size:12px; color:#666; margin-left:9px;"></span>
+                    </div>` : ''}
+                </div>
+            </details>`;
+        }
+
+        function applySuggestedWeights() {
+            const suggested = window.__suggestedWeights;
+            if (!suggested) return;
+            METRIC_FAMILIES.forEach(f => {
+                if (typeof suggested[f.id] === 'number') familyWeights[f.id] = suggested[f.id];
+            });
+            renderFamilyWeightPanel();
+            const rescored = rescoreFromFamilyWeights();
+            saveSession();
+            const note = document.getElementById('suggestedWeightsNote');
+            if (note) note.textContent = rescored ? 'Applied, and the pairs have been re-ranked.' : 'Applied.';
         }
 
         // Name any selected metric that gave every pair the same value, so a metric silently
@@ -13533,6 +13865,7 @@
         }
 
         function renderSimilarityPairs(pairs) {
+            renderSignalReport();
             renderInertMetricNotice();
             const container = document.getElementById('similarityPairsList');
             renderedPairs = pairs;
