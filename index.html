@@ -4433,13 +4433,7 @@
         }
 
         function getSelectedMetrics() {
-            const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
-                              'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
-                              'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
-                              'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
-                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
-                              'sharedEntities', 'distinctiveVocab',
-                              'posTemplate4', 'posTemplate6', 'argumentPath'];
+            const metricIds = ALL_METRIC_IDS;
             return metricIds.filter(id => {
                 const checkbox = document.getElementById('metric_' + id);
                 return checkbox && checkbox.checked;
@@ -4550,13 +4544,7 @@
 
         function getMetricWeights() {
             const weights = {};
-            const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount', 'avgSentenceLength',
-                              'temporalBurstiness', 'pronounDensity', 'transitionWords', 'ngramPunctuation', 'wordNgram',
-                              'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6', 'wordLevelFuzzy3', 'wordLevelFuzzy5',
-                              'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
-                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
-                              'sharedEntities', 'distinctiveVocab',
-                              'posTemplate4', 'posTemplate6', 'argumentPath'];
+            const metricIds = ALL_METRIC_IDS;
 
             metricIds.forEach(id => {
                 const slider = document.getElementById(`weight_${id}`);
@@ -4584,7 +4572,10 @@
             if (responses.length > 0) {
                 await calculateSimilarityPairs(responses);
                 // Re-apply the current threshold to update the display
-                const currentThreshold = document.getElementById('similarityThreshold')?.value || '0.4';
+                // 2.0 SD, matching the slider's own default. This read '0.4' - a leftover from
+                // when the threshold was a 0-to-0.95 similarity cutoff, and meaninglessly
+                // permissive as a number of standard deviations.
+                const currentThreshold = document.getElementById('similarityThreshold')?.value || '2.0';
                 updateThreshold(currentThreshold);
             }
         }
@@ -4594,13 +4585,7 @@
             const saved = localStorage.getItem('homogeneityAnalyzer_selectedMetrics');
             if (saved) {
                 const selected = JSON.parse(saved);
-                const metricIds = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
-                                  'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
-                                  'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
-                                  'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
-                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
-                              'sharedEntities', 'distinctiveVocab',
-                              'posTemplate4', 'posTemplate6', 'argumentPath'];
+                const metricIds = ALL_METRIC_IDS;
                 metricIds.forEach(id => {
                     const checkbox = document.getElementById('metric_' + id);
                     if (checkbox) {
@@ -10076,6 +10061,21 @@
             }
         ];
 
+        // Every metric the tool knows about, in one place.
+        //
+        // This list previously existed in three separate copies, each of which had to be edited
+        // in step whenever a metric was added. They happened to stay identical, but a metric
+        // missing from one copy would simply stop being offered or stop being scored, with
+        // nothing to indicate it - the same duplicated-behaviour failure that left the flagged
+        // respondent view on the old modal and the threshold being read two different ways.
+        const ALL_METRIC_IDS = ['cosine', 'jaccard', 'ngram', 'sentenceVariance', 'wordCount',
+                              'avgSentenceLength', 'temporalBurstiness', 'pronounDensity', 'transitionWords',
+                              'ngramPunctuation', 'wordNgram', 'ngram4', 'ngram5', 'ner', 'fuzzyNgram3', 'fuzzyNgram6',
+                              'wordLevelFuzzy3', 'wordLevelFuzzy5', 'bleu', 'burrowsDelta', 'burrowsDeltaTopicAgnostic', 'functionWordCosine', 'pureFunctionWordCosine', 'functionWordCharNgram', 'ttr', 'mattr', 'perplexity', 'transformerSemantic', 'posSyntactic', 'shaib4', 'shaib5', 'shaib6', 'shaib6lev1', 'shaib6lev2', 'shaib6lev3', 'simplePOS', 'functionWordDist', 'rareNgram',
+                              'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
+                              'sharedEntities', 'distinctiveVocab',
+                              'posTemplate4', 'posTemplate6', 'argumentPath'];
+
         const FAMILY_OF_METRIC = (() => {
             const map = {};
             METRIC_FAMILIES.forEach(f => f.metrics.forEach(m => { map[m] = f.id; }));
@@ -13933,7 +13933,7 @@
                     matches[pair.id1] = [];
                 }
                 counts[pair.id1]++;
-                matches[pair.id1].push({ id: pair.id2, similarity: pair.similarity });
+                matches[pair.id1].push({ id: pair.id2, similarity: pair.similarity, adjustedScore: pair.adjustedScore ?? 0 });
 
                 // Count for id2
                 if (!counts[pair.id2]) {
@@ -13941,7 +13941,7 @@
                     matches[pair.id2] = [];
                 }
                 counts[pair.id2]++;
-                matches[pair.id2].push({ id: pair.id1, similarity: pair.similarity });
+                matches[pair.id2].push({ id: pair.id1, similarity: pair.similarity, adjustedScore: pair.adjustedScore ?? 0 });
             });
 
             // Filter to respondents in 2+ pairs
@@ -13959,7 +13959,7 @@
 
             container.innerHTML = flagged.map(respondent => {
                 // Sort matches by similarity
-                respondent.matches.sort((a, b) => b.similarity - a.similarity);
+                respondent.matches.sort((a, b) => (b.adjustedScore ?? 0) - (a.adjustedScore ?? 0));
 
                 // Escape single quotes in ID for onclick handler
                 // Same reasoning as the pair rows: an id carrying an apostrophe would close the
@@ -13974,10 +13974,16 @@
                         </div>
                         <div class="match-chips">
                             ${respondent.matches.map(m => {
-                                const scoreClass = m.similarity >= 0.85 ? 'similarity-high' :
-                                                   m.similarity >= 0.70 ? 'similarity-medium' : 'similarity-low';
-                                return `<span class="match-chip ${scoreClass}">
-                                    #${m.id} (${(m.similarity * 100).toFixed(0)}%)
+                                // Coloured by the cohort-relative score on the same 3 and 2 SD
+                                // breakpoints the pair list uses. These chips were still keyed to
+                                // raw similarity at 0.85 and 0.70, which on real data never gets
+                                // near either - so every chip rendered as "low" and a six-SD match
+                                // looked exactly like a half-SD one.
+                                const chipZ = m.adjustedScore ?? 0;
+                                const scoreClass = chipZ >= 3 ? 'similarity-high' :
+                                                   chipZ >= 2 ? 'similarity-medium' : 'similarity-low';
+                                return `<span class="match-chip ${scoreClass}" title="${(m.similarity * 100).toFixed(0)}% raw similarity">
+                                    #${m.id} (${chipZ >= 0 ? '+' : ''}${chipZ.toFixed(1)} SD)
                                 </span>`;
                             }).join('')}
                         </div>
@@ -14008,7 +14014,7 @@
                     respondentPairs[pair.id1] = [];
                 }
                 respondentScores[pair.id1].push(pair.similarity);
-                respondentPairs[pair.id1].push({ id: pair.id2, similarity: pair.similarity });
+                respondentPairs[pair.id1].push({ id: pair.id2, similarity: pair.similarity, adjustedScore: pair.adjustedScore ?? 0 });
 
                 // Track for id2
                 if (!respondentScores[pair.id2]) {
@@ -14016,7 +14022,7 @@
                     respondentPairs[pair.id2] = [];
                 }
                 respondentScores[pair.id2].push(pair.similarity);
-                respondentPairs[pair.id2].push({ id: pair.id1, similarity: pair.similarity });
+                respondentPairs[pair.id2].push({ id: pair.id1, similarity: pair.similarity, adjustedScore: pair.adjustedScore ?? 0 });
             });
 
             // Calculate average and sort by lowest
@@ -14046,10 +14052,16 @@
                         </div>
                         <div class="match-chips">
                             ${respondent.pairs.slice(0, 5).map(m => {
-                                const scoreClass = m.similarity >= 0.85 ? 'similarity-high' :
-                                                   m.similarity >= 0.70 ? 'similarity-medium' : 'similarity-low';
-                                return `<span class="match-chip ${scoreClass}">
-                                    #${m.id} (${(m.similarity * 100).toFixed(0)}%)
+                                // Coloured by the cohort-relative score on the same 3 and 2 SD
+                                // breakpoints the pair list uses. These chips were still keyed to
+                                // raw similarity at 0.85 and 0.70, which on real data never gets
+                                // near either - so every chip rendered as "low" and a six-SD match
+                                // looked exactly like a half-SD one.
+                                const chipZ = m.adjustedScore ?? 0;
+                                const scoreClass = chipZ >= 3 ? 'similarity-high' :
+                                                   chipZ >= 2 ? 'similarity-medium' : 'similarity-low';
+                                return `<span class="match-chip ${scoreClass}" title="${(m.similarity * 100).toFixed(0)}% raw similarity">
+                                    #${m.id} (${chipZ >= 0 ? '+' : ''}${chipZ.toFixed(1)} SD)
                                 </span>`;
                             }).join('')}
                             ${respondent.pairs.length > 5 ? `<span style="color: #999; font-size: 12px;">+${respondent.pairs.length - 5} more</span>` : ''}
@@ -15244,12 +15256,16 @@
             }, 100);
         }
 
+        // The non-empty values of one column, lower-cased. Used by the pattern analyses, which
+        // work on raw text and do not need ids.
+        function lowercaseColumnTexts(column) {
+            return csvData
+                .map(row => String(row[column] ?? '').toLowerCase())
+                .filter(text => text.length > 0);
+        }
+
         function findCorrelatedPatterns(column) {
-            // Extract all responses
-            const responses = csvData.map(row => {
-                const text = row[column] || '';
-                return text.toString().toLowerCase();
-            }).filter(text => text.length > 0);
+            const responses = lowercaseColumnTexts(column);
 
             if (responses.length < 3) {
                 return [];
@@ -16200,11 +16216,7 @@
         }
 
         function calculateSpecificTermCorrelation(column, searchTerms) {
-            // Extract all responses
-            const responses = csvData.map(row => {
-                const text = row[column] || '';
-                return text.toString().toLowerCase();
-            }).filter(text => text.length > 0);
+            const responses = lowercaseColumnTexts(column);
 
             const totalResponses = responses.length;
 
