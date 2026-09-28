@@ -1768,7 +1768,7 @@
                         </div>
                         <!-- Argument Path -->
                         <div style="display: flex; align-items: center; padding: 12px; border: 1px solid #57068C; border-radius: 5px; background: #f6f0fa;">
-                            <input type="checkbox" id="metric_argumentPath"  onchange="toggleMetricWeight('argumentPath')">
+                            <input type="checkbox" id="metric_argumentPath" checked onchange="toggleMetricWeight('argumentPath')">
                             <div style="flex: 1; margin-left: 10px;">
                                 <strong>Argument Path</strong>
                                 <div style="font-size: 12px; color: #666;">Whether the two responses move through their argument in the same order. Needs the semantic model.</div>
@@ -3099,7 +3099,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 14; // Increment this when adding new metrics (v14 = rarity-weighted POS templates, argument path)
+        const METRIC_VERSION = 15; // Increment this when adding new metrics (v15 = argument path reported absent when there is no sequence to compare)
 
         // ========== HEADER MENU ==========
 
@@ -4948,7 +4948,7 @@
                 case 'Perplexity Fingerprint':
                     detailsHTML = await generatePerplexityDetails(text1, text2, id1, id2);
                     break;
-                case '<i class="fas fa-sparkles" style="color: #ffd700;"></i> AI Semantic Similarity':
+                case 'AI Semantic Similarity':
                     detailsHTML = await generateTransformerSemanticDetails(text1, text2, id1, id2);
                     break;
                 case 'Syntactic Template (Shaib)':
@@ -4986,6 +4986,33 @@
                     break;
                 case 'Moving-Average TTR (MATTR)':
                     detailsHTML = generateMATTRDetails(text1, text2, id1, id2);
+                    break;
+                case 'Shared Names and Figures':
+                    detailsHTML = generateSharedEntitiesDetails(text1, text2, id1, id2);
+                    break;
+                case 'Distinctive Vocabulary':
+                    detailsHTML = generateDistinctiveVocabDetails(text1, text2, id1, id2);
+                    break;
+                case 'Chatbot Register':
+                    detailsHTML = generateRegisterMarkersDetails(text1, text2, id1, id2);
+                    break;
+                case 'Punctuation Profile':
+                    detailsHTML = generatePunctuationProfileDetails(text1, text2, id1, id2);
+                    break;
+                case 'Which Transitions':
+                    detailsHTML = generateTransitionChoiceDetails(text1, text2, id1, id2);
+                    break;
+                case 'Sentence Openers':
+                    detailsHTML = generateSentenceOpenersDetails(text1, text2, id1, id2);
+                    break;
+                case 'POS 4-gram Templates':
+                    detailsHTML = generatePosTemplateDetails(text1, text2, id1, id2, 4);
+                    break;
+                case 'POS 6-gram Templates':
+                    detailsHTML = generatePosTemplateDetails(text1, text2, id1, id2, 6);
+                    break;
+                case 'Argument Path':
+                    detailsHTML = generateArgumentPathDetails(text1, text2, id1, id2);
                     break;
                 case 'Combined':
                     detailsHTML = await generateCombinedDetails(text1, text2, id1, id2);
@@ -9616,6 +9643,19 @@
             const a = semanticIndex.byText.get(text1);
             const b = semanticIndex.byText.get(text2);
             if (!a || !b) return null;
+
+            // A response shorter than the chunk budget is a single passage, and two single
+            // passages have no sequence to compare - the alignment has exactly one cell to fill.
+            // What comes out is then just max(0, cosine) of the two whole-response embeddings,
+            // which is the Meaning measure with its negative half flattened to zero. Measured on
+            // a set of short application answers: 66 of 171 pairs reproduced the semantic score
+            // exactly and the other 105 read 0.000, not because their arguments were ordered
+            // differently but because their cosine happened to be negative. Reporting a duplicate
+            // as though it were independent evidence makes the meaning family vote twice; the
+            // zeros are worse, since they read as "no shared structure" when the truth is that
+            // there was no structure to compare. Absent is the honest answer.
+            if (a.length < 2 || b.length < 2) return null;
+
             return orderedAlignmentScore(a, b);
         }
 
@@ -9756,6 +9796,427 @@
 
             return { value, median, z, percentile, pairs: sorted.length,
                      max: sorted[sorted.length - 1] };
+        }
+
+        // ============================================================================
+        // CALCULATION PANELS FOR THE RARITY-WEIGHTED MEASURES
+        // ============================================================================
+        //
+        // Seven measures share one shape: build a count of what each response uses, weight each
+        // item by how rare it is in this cohort, and take the cosine between the two weighted
+        // vectors. Only the vocabulary differs - phrases, names, content words, register
+        // markers, transitions, sentence openings, tag templates. One panel generator serves
+        // them all, parameterised by which vocabulary it is reading, rather than seven
+        // near-identical copies drifting apart.
+
+        function idfCosineBreakdown(mapA, mapB, df, total) {
+            const weight = (key) => Math.log((total + 1) / ((df.get(key) || 0) + 1)) + 1;
+            let dot = 0, magA = 0, magB = 0;
+            const shared = [];
+
+            mapA.forEach((countA, key) => {
+                const w = weight(key), a = countA * w;
+                magA += a * a;
+                const countB = mapB.get(key);
+                if (countB) {
+                    const b = countB * w;
+                    dot += a * b;
+                    shared.push({ key, df: df.get(key) || 0, weight: w, countA, countB, product: a * b });
+                }
+            });
+            mapB.forEach((countB, key) => { const b = countB * weight(key); magB += b * b; });
+
+            shared.sort((x, y) => y.product - x.product);
+            const score = (magA && magB) ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+            return { shared, dot, magA: Math.sqrt(magA), magB: Math.sqrt(magB), score,
+                     sizeA: mapA.size, sizeB: mapB.size, total };
+        }
+
+        function renderIdfCosinePanel(config) {
+            const { title, unit, units, what, how, caveat, mapA, mapB, df, total, id1, id2,
+                    transform, exampleHeader, exampleFor } = config;
+            if (!df) {
+                return `<div style="background:#fff3cd; padding:13px; border-radius:5px; font-size:13px; color:#7d6608;">
+                    The cohort index for this measure was not built, so there is nothing to show. Enable the
+                    measure and re-run the analysis.
+                </div>`;
+            }
+            const b = idfCosineBreakdown(mapA, mapB, df, total);
+            const show = (k) => escapeHtml(transform ? transform(k) : k);
+
+            const rows = b.shared.slice(0, 20).map((s, i) => `
+                <tr style="background:${i % 2 ? '#fff' : '#fafafa'}; border-bottom:1px solid #eee;">
+                    <td style="padding:6px 9px; font-family:monospace; font-size:12px;">${show(s.key)}</td>
+                    <td style="padding:6px 9px; text-align:right;">${s.df} of ${b.total}</td>
+                    <td style="padding:6px 9px; text-align:right;">${s.weight.toFixed(2)}</td>
+                    <td style="padding:6px 9px; text-align:right;">${s.countA}</td>
+                    <td style="padding:6px 9px; text-align:right;">${s.countB}</td>
+                    ${exampleFor ? `<td style="padding:6px 9px; font-size:12px; color:#555;">${escapeHtml(exampleFor(s.key) || '-')}</td>` : ''}
+                </tr>`).join('');
+
+            return `
+                <div style="background:#ecf0f1; padding:14px; border-radius:5px; margin-bottom:16px;">
+                    <h3 style="margin:0 0 8px 0;">${escapeHtml(title)}</h3>
+                    <p style="margin:0 0 8px 0; font-size:13px;">${what}</p>
+                    <div style="font-family:monospace; background:white; padding:11px; border-radius:3px; font-size:12px; line-height:1.7;">
+                        <strong>Step 1 - weight each ${escapeHtml(unit)} by rarity</strong><br>
+                        weight = log((${b.total} + 1) / (responses containing it + 1)) + 1<br><br>
+                        <strong>Step 2 - cosine between the two weighted counts</strong><br>
+                        score = &Sigma;(a&middot;w &times; b&middot;w) / (&#8741;a&middot;w&#8741; &times; &#8741;b&middot;w&#8741;)
+                    </div>
+                    <p style="margin:9px 0 0 0; font-size:12px; color:#666;">${how}</p>
+                    ${caveat ? `<p style="margin:7px 0 0 0; font-size:12px; color:#888;">${caveat}</p>` : ''}
+                </div>
+
+                <div style="background:#d5f4e6; padding:14px; border-radius:5px; margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0;">Score for this pair</h4>
+                    <p style="font-size:30px; font-weight:700; margin:0;">${(b.score * 100).toFixed(1)}%</p>
+                    <p style="font-size:12px; color:#666; margin:6px 0 0 0; font-family:monospace;">
+                        ${b.dot.toFixed(2)} / (${b.magA.toFixed(2)} &times; ${b.magB.toFixed(2)}) = ${b.score.toFixed(4)}
+                    </p>
+                    <p style="font-size:12px; color:#666; margin:5px 0 0 0;">
+                        ${escapeHtml(String(id1))} uses ${b.sizeA} distinct ${escapeHtml(b.sizeA === 1 ? unit : units)},
+                        ${escapeHtml(String(id2))} uses ${b.sizeB}, and ${b.shared.length} ${b.shared.length === 1 ? 'is' : 'are'} common to both.
+                    </p>
+                </div>
+
+                ${b.shared.length ? `
+                <h4 style="margin:0 0 6px 0;">Shared ${escapeHtml(units)}, by contribution</h4>
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead><tr style="background:#57068C; color:white;">
+                        <th style="padding:8px 9px; text-align:left;">${escapeHtml(unit.charAt(0).toUpperCase() + unit.slice(1))}</th>
+                        <th style="padding:8px 9px; text-align:right;">Appears in</th>
+                        <th style="padding:8px 9px; text-align:right;">Weight</th>
+                        <th style="padding:8px 9px; text-align:right;">${escapeHtml(String(id1))}</th>
+                        <th style="padding:8px 9px; text-align:right;">${escapeHtml(String(id2))}</th>
+                        ${exampleHeader ? `<th style="padding:8px 9px; text-align:left;">${escapeHtml(exampleHeader)}</th>` : ''}
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+                ${b.shared.length > 20 ? `<p style="font-size:12px; color:#888; margin-top:6px;">Showing the 20 largest contributors of ${b.shared.length}.</p>` : ''}
+                ` : `<div style="background:#fff3cd; padding:13px; border-radius:5px; font-size:13px; color:#7d6608;">
+                    These two responses have no ${escapeHtml(units)} in common, so the score is zero.
+                </div>`}`;
+        }
+
+        function generateSharedEntitiesDetails(text1, text2, id1, id2) {
+            return renderIdfCosinePanel({
+                title: 'Shared names and figures, weighted by rarity',
+                unit: 'name or figure', units: 'names and figures',
+                what: `Every person, place, organisation and number each response mentions, compared -
+                       but with each match counted in proportion to how few other responses mention
+                       the same thing.`,
+                how: `Two responses both naming the university tell you only that they answered the
+                      same prompt: that name appears in nearly every response, so its weight is close
+                      to 1. Two responses both citing the same obscure person, or the same oddly
+                      precise figure that nobody else cites, get a weight several times higher. This
+                      is the difference between shared topic and shared source.`,
+                caveat: `Names come from Compromise's entity tagger, so an unusual spelling may be
+                         missed. Numbers are matched as written: "40 percent" and "40%" normalise to
+                         the same key, but "two fifths" does not.`,
+                mapA: contentProfileFor(text1).entities, mapB: contentProfileFor(text2).entities,
+                df: contentProfileStats && contentProfileStats.entityDf,
+                total: contentProfileStats && contentProfileStats.total, id1, id2
+            });
+        }
+
+        function generateDistinctiveVocabDetails(text1, text2, id1, id2) {
+            return renderIdfCosinePanel({
+                title: 'Distinctive vocabulary, weighted by rarity',
+                unit: 'content word', units: 'content words',
+                what: `The same rarity argument applied to ordinary words rather than named things.
+                       Function words and anything four letters or shorter are dropped; what is left
+                       is compared with each shared word weighted by how few responses use it.`,
+                how: `This catches shared unusual phrasing that never forms a repeated phrase. Two
+                      responses can share "multifaceted", "underscores" and "nuanced" without a single
+                      three-word sequence in common, which is what the n-gram measures would need in
+                      order to see anything. Common words carry almost no weight, so the score is
+                      driven by the handful of words the rest of the cohort did not reach for.`,
+                caveat: `Words are matched as typed, not lemmatised: "argues" and "argued" are two
+                         different words here.`,
+                mapA: contentProfileFor(text1).vocabulary, mapB: contentProfileFor(text2).vocabulary,
+                df: contentProfileStats && contentProfileStats.vocabularyDf,
+                total: contentProfileStats && contentProfileStats.total, id1, id2
+            });
+        }
+
+        function generateRegisterMarkersDetails(text1, text2, id1, id2) {
+            return renderIdfCosinePanel({
+                title: 'Chatbot register markers',
+                unit: 'marker', units: 'markers',
+                what: `A fixed list of ${REGISTER_MARKERS.length} words and phrases that current chat
+                       models reach for far more often than student writers do - "delve", "tapestry",
+                       "it is important to note", and the rest. Which markers each response uses is
+                       compared, with rarer markers weighted higher.`,
+                how: `Deliberately a comparison of which markers are <em>present</em>, not of how
+                      often they appear. An earlier version z-scored the rates against the class,
+                      which had the effect of making two responses that used no markers at all look
+                      identical to each other - they shared the same absence. On the set this was
+                      measured against, marker-free student pairs scored 1.000 while the actual
+                      chatbot pairs scored 0.628, exactly backwards. Comparing presence gives a
+                      marker-free pair a score of zero, which is the honest answer.`,
+                caveat: `A fixed list ages. Markers that were distinctive in 2024 are drifting into
+                         ordinary student prose, and a marker nobody in this cohort uses contributes
+                         nothing either way.`,
+                mapA: styleProfileFor(text1).register, mapB: styleProfileFor(text2).register,
+                df: styleProfileStats && styleProfileStats.registerDf,
+                total: styleProfileStats && styleProfileStats.total, id1, id2
+            });
+        }
+
+        function generateTransitionChoiceDetails(text1, text2, id1, id2) {
+            return renderIdfCosinePanel({
+                title: 'Which transitions, not how many',
+                unit: 'transition', units: 'transitions',
+                what: `Which of ${TRANSITION_PHRASES.length} connectives each response uses, weighted
+                       by how few other responses use the same ones.`,
+                how: `The older Transition Words measure compares transition <em>density</em> - how
+                      many per hundred words. Density throws away what is actually distinguishing:
+                      "Furthermore / Moreover / Ultimately" and "also / but / so" can have identical
+                      densities and share nothing. This measure asks which ones, so a pair that both
+                      chose the same uncommon connectives scores high and a pair that merely both
+                      write densely does not.`,
+                mapA: styleProfileFor(text1).transitions, mapB: styleProfileFor(text2).transitions,
+                df: styleProfileStats && styleProfileStats.transitionDf,
+                total: styleProfileStats && styleProfileStats.total, id1, id2
+            });
+        }
+
+        function generateSentenceOpenersDetails(text1, text2, id1, id2) {
+            return renderIdfCosinePanel({
+                title: 'How sentences begin',
+                unit: 'opening', units: 'openings',
+                what: `Every sentence contributes two entries: its first word, and its first two words
+                       together. Shared openings are weighted by how few responses open a sentence the
+                       same way.`,
+                how: `How a writer starts sentences is a habit that survives paraphrase - it is chosen
+                      below the level of what the sentence is about. Two responses that both repeatedly
+                      open with "This demonstrates" or "Through my" have something in common that no
+                      amount of rewording would hide, and that no content measure would see.`,
+                caveat: `Short responses give this little to work with: a five-sentence answer
+                         contributes ten entries, so a single coincidence moves the score a long way.`,
+                transform: (key) => key.startsWith('w2:') ? key.slice(3) + ' ...' : key.slice(2) + ' ...',
+                exampleHeader: 'Kind',
+                exampleFor: (key) => key.startsWith('w2:') ? 'first two words' : 'first word',
+                mapA: styleProfileFor(text1).openers, mapB: styleProfileFor(text2).openers,
+                df: styleProfileStats && styleProfileStats.openerDf,
+                total: styleProfileStats && styleProfileStats.total, id1, id2
+            });
+        }
+
+        function generatePosTemplateDetails(text1, text2, id1, id2, n) {
+            // One example of the words each shared template covers, so the pattern is legible.
+            const examples = new Map();
+            sharedPosTemplateDetails(text1, text2, n, 40).forEach(d => {
+                examples.set(d.template, d.exampleA && d.exampleB ? `${d.exampleA}  /  ${d.exampleB}` : (d.exampleA || d.exampleB));
+            });
+
+            return renderIdfCosinePanel({
+                title: `Sentence-shape templates of ${n} tags`,
+                unit: 'template', units: 'templates',
+                what: `Each response is reduced to its sequence of part-of-speech tags, and every run
+                       of ${n} consecutive tags is a template. Shared templates are weighted by how
+                       few responses use them.`,
+                how: `Shaib et al. find that models reuse a small set of syntactic templates far more
+                      often than human writers do. The older Shaib metrics on this list compare
+                      template <em>sets</em> with a Jaccard index, which saturates: with a tag
+                      vocabulary this small, any two responses of reasonable length share most common
+                      templates whoever wrote them. Weighting by rarity is what makes the measure
+                      informative - a template everybody uses counts for nothing, and the score is
+                      carried by the shapes only these two responses reach for.`,
+                caveat: `Tags come from Compromise, which is fast but not a research-grade tagger;
+                         mis-tagged words produce templates that are artefacts. The words in the last
+                         column are illustrations of each pattern, not the evidence - the evidence is
+                         the tag sequence.`,
+                transform: (key) => key,
+                exampleHeader: `Example words (${escapeHtml(String(id1))} / ${escapeHtml(String(id2))})`,
+                exampleFor: (key) => examples.get(key) || '',
+                mapA: posTemplateCounts(text1, n), mapB: posTemplateCounts(text2, n),
+                df: posTemplateStats && posTemplateStats.bySize[n],
+                total: posTemplateStats && posTemplateStats.total, id1, id2
+            });
+        }
+
+        function generatePunctuationProfileDetails(text1, text2, id1, id2) {
+            if (!styleProfileStats || !styleProfileStats.punctuation) {
+                return `<div style="background:#fff3cd; padding:13px; border-radius:5px; font-size:13px; color:#7d6608;">
+                    The cohort punctuation statistics were not built, so there is nothing to show.
+                </div>`;
+            }
+            const { mean, sd } = styleProfileStats.punctuation;
+            const v1 = styleProfileFor(text1).punctuation, v2 = styleProfileFor(text2).punctuation;
+
+            let dot = 0, na = 0, nb = 0;
+            const rows = PUNCTUATION_FEATURES.map((f, k) => {
+                if (!(sd[k] > 1e-12)) return { label: f.label, flat: true };
+                const z1 = (v1[k] - mean[k]) / sd[k], z2 = (v2[k] - mean[k]) / sd[k];
+                dot += z1 * z2; na += z1 * z1; nb += z2 * z2;
+                return { label: f.label, r1: v1[k], r2: v2[k], classMean: mean[k], z1, z2, product: z1 * z2 };
+            });
+
+            const cos = (na && nb) ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+            const score = (na === 0 || nb === 0) ? 0.5 : Math.min(1, Math.max(0, (1 + cos) / 2));
+
+            const body = rows.map((r, i) => r.flat ? `
+                <tr style="background:${i % 2 ? '#fff' : '#fafafa'}; border-bottom:1px solid #eee; color:#999;">
+                    <td style="padding:6px 9px;">${escapeHtml(r.label)}</td>
+                    <td colspan="5" style="padding:6px 9px; font-size:12px;">No variation across the cohort - excluded</td>
+                </tr>` : `
+                <tr style="background:${i % 2 ? '#fff' : '#fafafa'}; border-bottom:1px solid #eee;">
+                    <td style="padding:6px 9px;">${escapeHtml(r.label)}</td>
+                    <td style="padding:6px 9px; text-align:right;">${r.r1.toFixed(1)}</td>
+                    <td style="padding:6px 9px; text-align:right;">${r.r2.toFixed(1)}</td>
+                    <td style="padding:6px 9px; text-align:right; color:#888;">${r.classMean.toFixed(1)}</td>
+                    <td style="padding:6px 9px; text-align:right;">${r.z1 >= 0 ? '+' : ''}${r.z1.toFixed(2)} / ${r.z2 >= 0 ? '+' : ''}${r.z2.toFixed(2)}</td>
+                    <td style="padding:6px 9px; text-align:right; font-weight:${r.product > 0.5 ? '700' : '400'}; color:${r.product > 0 ? '#1e8449' : '#999'};">${r.product >= 0 ? '+' : ''}${r.product.toFixed(2)}</td>
+                </tr>`).join('');
+
+            return `
+                <div style="background:#ecf0f1; padding:14px; border-radius:5px; margin-bottom:16px;">
+                    <h3 style="margin:0 0 8px 0;">Punctuation habits, measured against the class</h3>
+                    <p style="margin:0 0 8px 0; font-size:13px;">
+                        ${PUNCTUATION_FEATURES.length} punctuation features, counted per 1,000 words, then
+                        expressed as how far each response sits from the class average.
+                    </p>
+                    <div style="font-family:monospace; background:white; padding:11px; border-radius:3px; font-size:12px; line-height:1.7;">
+                        <strong>Step 1 - rate</strong> = occurrences / words &times; 1000<br>
+                        <strong>Step 2 - z</strong> = (rate &minus; class mean) / class SD<br>
+                        <strong>Step 3 - cosine</strong> = &Sigma;(z&#8321;&middot;z&#8322;) / (&#8741;z&#8321;&#8741; &times; &#8741;z&#8322;&#8741;)<br>
+                        <strong>Step 4 - rescale</strong> = (1 + cosine) / 2
+                    </div>
+                    <p style="margin:9px 0 0 0; font-size:12px; color:#666;">
+                        Step 2 is what makes this worth measuring. Comparing raw rates would score two
+                        responses alike for both using commas at the class average, which is no evidence
+                        of anything. Z-scoring asks instead whether they depart from the class in the
+                        <em>same direction</em>: both unusually heavy on em dashes, both unusually light
+                        on contractions. Only shared departures move the score.
+                    </p>
+                    <p style="margin:7px 0 0 0; font-size:12px; color:#888;">
+                        Step 4 means an unrelated pair scores around 0.5, not 0 - a cosine of &minus;1
+                        (opposite habits) maps to 0. Read this one relative to the cohort, not as a
+                        percentage. Note also that punctuation is the easiest thing on this list for a
+                        word processor to change without the writer noticing.
+                    </p>
+                </div>
+
+                <div style="background:#d5f4e6; padding:14px; border-radius:5px; margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0;">Score for this pair</h4>
+                    <p style="font-size:30px; font-weight:700; margin:0;">${(score * 100).toFixed(1)}%</p>
+                    <p style="font-size:12px; color:#666; margin:6px 0 0 0; font-family:monospace;">
+                        cosine = ${dot.toFixed(2)} / (${Math.sqrt(na).toFixed(2)} &times; ${Math.sqrt(nb).toFixed(2)}) = ${cos.toFixed(4)}
+                        &nbsp;&rarr;&nbsp; (1 + ${cos.toFixed(4)}) / 2 = ${score.toFixed(4)}
+                    </p>
+                </div>
+
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead><tr style="background:#57068C; color:white;">
+                        <th style="padding:8px 9px; text-align:left;">Feature</th>
+                        <th style="padding:8px 9px; text-align:right;">${escapeHtml(String(id1))}</th>
+                        <th style="padding:8px 9px; text-align:right;">${escapeHtml(String(id2))}</th>
+                        <th style="padding:8px 9px; text-align:right;">Class</th>
+                        <th style="padding:8px 9px; text-align:right;">z each</th>
+                        <th style="padding:8px 9px; text-align:right;">z&#8321;&middot;z&#8322;</th>
+                    </tr></thead>
+                    <tbody>${body}</tbody>
+                </table>
+                <p style="font-size:12px; color:#888; margin-top:6px;">
+                    Rates are per 1,000 words. A large positive product in the last column is a habit
+                    both responses share and the class does not.
+                </p>`;
+        }
+
+        function generateArgumentPathDetails(text1, text2, id1, id2) {
+            const detail = passageAlignmentDetails(text1, text2, 200);
+            if (!detail) {
+                return `<div style="background:#fff3cd; padding:13px; border-radius:5px; font-size:13px; color:#7d6608;">
+                    This measure needs the sentence embeddings, which were not available for this pair.
+                    Enable AI Semantic Similarity and re-run the analysis.
+                </div>`;
+            }
+
+            const m = detail.chunkCountA, n = detail.chunkCountB;
+            if (m < 2 || n < 2) {
+                return `<div style="background:#fff3cd; padding:14px; border-radius:5px; font-size:13px; color:#7d6608; line-height:1.6;">
+                    <strong>This measure has nothing to compare for this pair.</strong><br>
+                    It asks whether two responses move through their argument in the same order, which
+                    needs at least two passages on each side. Responses shorter than
+                    ${SEMANTIC_CHUNK_WORDS} words stay a single passage, and
+                    ${escapeHtml(String(id1))} has ${m} while ${escapeHtml(String(id2))} has ${n}.<br><br>
+                    Forcing a number here would just return the whole-response cosine, which the
+                    Meaning family already reports - so this measure is recorded as absent rather than
+                    counted twice. It contributes to the combined score only on longer writing.
+                </div>`;
+            }
+            const sum = detail.ordered.reduce((t, o) => t + o.score, 0);
+            const norm = Math.sqrt(m * n);
+            const score = Math.min(1, Math.max(0, sum / norm));
+
+            const clip = (s, len) => { s = String(s).replace(/\s+/g, ' ').trim(); return s.length > len ? s.slice(0, len) + '...' : s; };
+
+            const rows = detail.ordered.slice(0, 12).map((o, i) => `
+                <tr style="background:${i % 2 ? '#fff' : '#fafafa'}; border-bottom:1px solid #eee; vertical-align:top;">
+                    <td style="padding:7px 9px; white-space:nowrap; color:#888;">${o.a + 1} &rarr; ${o.b + 1}</td>
+                    <td style="padding:7px 9px; font-size:12px;">${escapeHtml(clip(o.textA, 150))}</td>
+                    <td style="padding:7px 9px; font-size:12px;">${escapeHtml(clip(o.textB, 150))}</td>
+                    <td style="padding:7px 9px; text-align:right; font-weight:600;">${o.score.toFixed(3)}</td>
+                </tr>`).join('');
+
+            return `
+                <div style="background:#ecf0f1; padding:14px; border-radius:5px; margin-bottom:16px;">
+                    <h3 style="margin:0 0 8px 0;">Do both responses take the same route?</h3>
+                    <p style="margin:0 0 8px 0; font-size:13px;">
+                        Each response is split into passages and embedded. This finds the best
+                        <em>order-preserving</em> matching between the two passage lists - passages may
+                        be skipped on either side, but the matches cannot cross.
+                    </p>
+                    <div style="font-family:monospace; background:white; padding:11px; border-radius:3px; font-size:12px; line-height:1.7;">
+                        <strong>Step 1</strong> - S[i][j] = cosine between passage i of ${escapeHtml(String(id1))} and passage j of ${escapeHtml(String(id2))}<br>
+                        <strong>Step 2</strong> - D[i][j] = max( D[i&minus;1][j&minus;1] + max(0, S[i&minus;1][j&minus;1]), D[i&minus;1][j], D[i][j&minus;1] )<br>
+                        <strong>Step 3</strong> - score = D[${m}][${n}] / &radic;(${m} &times; ${n})
+                    </div>
+                    <p style="margin:9px 0 0 0; font-size:12px; color:#666;">
+                        The recurrence is the standard sequence-alignment dynamic program, over passage
+                        similarities instead of residues. It answers a different question from the
+                        passage correspondences above: those ask whether the same ground is covered,
+                        this asks whether it is covered <em>in the same sequence</em>. Two responses
+                        can share every point and organise them differently, or share only three points
+                        but hit them in the same order - the second is the more distinctive fact.
+                    </p>
+                    <p style="margin:7px 0 0 0; font-size:12px; color:#888;">
+                        Dividing by &radic;(m&times;n) stops a long pair from scoring highly merely by
+                        having more passages to match. Responses to the same prompt naturally share some
+                        ordering - a claim precedes its support in most writing - so read this against
+                        the cohort figure beside it, not on its own.
+                    </p>
+                </div>
+
+                <div style="background:#d5f4e6; padding:14px; border-radius:5px; margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0;">Score for this pair</h4>
+                    <p style="font-size:30px; font-weight:700; margin:0;">${(score * 100).toFixed(1)}%</p>
+                    <p style="font-size:12px; color:#666; margin:6px 0 0 0; font-family:monospace;">
+                        ${sum.toFixed(3)} / &radic;(${m} &times; ${n}) = ${sum.toFixed(3)} / ${norm.toFixed(2)} = ${score.toFixed(4)}
+                    </p>
+                    <p style="font-size:12px; color:#666; margin:5px 0 0 0;">
+                        ${detail.ordered.length} passage${detail.ordered.length === 1 ? '' : 's'} aligned, in order,
+                        out of ${m} in ${escapeHtml(String(id1))} and ${n} in ${escapeHtml(String(id2))}.
+                    </p>
+                </div>
+
+                ${detail.ordered.length ? `
+                <h4 style="margin:0 0 6px 0;">The aligned sequence</h4>
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead><tr style="background:#57068C; color:white;">
+                        <th style="padding:8px 9px; text-align:left;">Passage</th>
+                        <th style="padding:8px 9px; text-align:left;">${escapeHtml(String(id1))}</th>
+                        <th style="padding:8px 9px; text-align:left;">${escapeHtml(String(id2))}</th>
+                        <th style="padding:8px 9px; text-align:right;">Cosine</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+                ${detail.ordered.length > 12 ? `<p style="font-size:12px; color:#888; margin-top:6px;">Showing the first 12 of ${detail.ordered.length} aligned passages.</p>` : ''}
+                ` : `<div style="background:#fff3cd; padding:13px; border-radius:5px; font-size:13px; color:#7d6608;">
+                    No passage pair had positive similarity, so nothing aligned.
+                </div>`}`;
         }
 
         // ============================================================================
