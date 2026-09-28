@@ -3099,7 +3099,7 @@
         // Per-metric cohort statistics: row/grand sums for double-centering, plus the mean and
         // spread of the adjusted values used to turn them into z-scores.
         let metricAdjustmentParams = {};
-        const METRIC_VERSION = 15; // Increment this when adding new metrics (v15 = argument path reported absent when there is no sequence to compare)
+        const METRIC_VERSION = 16; // Increment this when adding new metrics (v16 = families score on selected measures, by weighted median of percentiles)
 
         // ========== HEADER MENU ==========
 
@@ -9749,6 +9749,35 @@
             return A.map((row, i) => row[i]).sort((x, y) => y - x);
         }
 
+        // A compact stand-in for the full sorted list of a measure's values: evenly spaced
+        // quantiles, enough to place any pair to a tenth of a percentile. Keeping every value
+        // would cost pairs x measures floats - tens of megabytes on a large cohort - and answer no
+        // question this does not.
+        const QUANTILE_STEPS = 1000;
+
+        function quantileSketch(sortedValues) {
+            if (!sortedValues.length) return null;
+            const out = new Float64Array(QUANTILE_STEPS + 1);
+            const last = sortedValues.length - 1;
+            for (let k = 0; k <= QUANTILE_STEPS; k++) {
+                out[k] = sortedValues[Math.round((k / QUANTILE_STEPS) * last)];
+            }
+            return out;
+        }
+
+        // Where a value falls within that distribution, in [0, 1].
+        function percentileFromSketch(sketch, value) {
+            if (!sketch) return null;
+            if (value <= sketch[0]) return 0;
+            if (value >= sketch[QUANTILE_STEPS]) return 1;
+            let lo = 0, hi = QUANTILE_STEPS;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (sketch[mid] < value) lo = mid + 1; else hi = mid;
+            }
+            return lo / QUANTILE_STEPS;
+        }
+
         const COHORT_CORRELATION_SAMPLE = 20000;
 
         // Systematic sample, so the correlation work stays bounded on a large cohort. Correlation
@@ -9769,11 +9798,14 @@
             return sortedValues[at];
         }
 
-        function diagnoseCohort() {
-            const pairs = window.__lastPairMetrics || [];
-            if (pairs.length < 5) return null;
+        // The verdict on every measure, for one cohort.
+        //
+        // Deliberately separate from diagnoseCohort() so that the scoring pass and the report use
+        // the same judgements rather than two implementations that drift apart. Scoring runs it on
+        // the pair list it is building; the report runs it on the finished one.
+        function assessMetricsForCohort(pairs, metricIds) {
+            if (!pairs || pairs.length < 5) return { rows: [], duplicates: [] };
 
-            // ---- corpus shape ---------------------------------------------------------
             const wordsOf = new Map();
             const lengthOf = (text) => {
                 if (!wordsOf.has(text)) wordsOf.set(text, String(text).trim().split(/\s+/).filter(Boolean).length);
@@ -9781,27 +9813,11 @@
             };
             pairs.forEach(p => { lengthOf(p.text1); lengthOf(p.text2); });
 
-            const lengths = [...wordsOf.values()].sort((a, b) => a - b);
-            const corpus = {
-                responses: lengths.length,
-                pairs: pairs.length,
-                shortest: lengths[0],
-                p25: percentileOf(lengths, 0.25),
-                median: percentileOf(lengths, 0.5),
-                p75: percentileOf(lengths, 0.75),
-                longest: lengths[lengths.length - 1]
-            };
-            corpus.spread = corpus.p25 > 0 ? corpus.p75 / corpus.p25 : Infinity;
-            // Where lengths vary this much, any measure that responds to length will read as
-            // similarity between two responses that share nothing but their size.
-            corpus.heterogeneous = corpus.spread >= 2;
-
             const sample = boundedSample(pairs);
             const sampleLengthGap = sample.map(p => Math.abs(lengthOf(p.text1) - lengthOf(p.text2)));
             const sampleLengthFloor = sample.map(p => Math.min(lengthOf(p.text1), lengthOf(p.text2)));
 
-            // ---- per-measure verdicts -------------------------------------------------
-            const rows = getSelectedMetrics().map(metric => {
+            const rows = metricIds.map(metric => {
                 const row = {
                     metric,
                     name: METRIC_PANEL_NAMES[metric] || metric,
@@ -9906,6 +9922,57 @@
                 }
             }
 
+            return { rows, duplicates };
+        }
+
+        function diagnoseCohort() {
+            const pairs = window.__lastPairMetrics || [];
+            if (pairs.length < 5) return null;
+
+            // ---- corpus shape ---------------------------------------------------------
+            const seen = new Map();
+            const wordsIn = (text) => {
+                if (!seen.has(text)) seen.set(text, String(text).trim().split(/\s+/).filter(Boolean).length);
+                return seen.get(text);
+            };
+            pairs.forEach(p => { wordsIn(p.text1); wordsIn(p.text2); });
+
+            const lengths = [...seen.values()].sort((a, b) => a - b);
+            const corpus = {
+                responses: lengths.length,
+                pairs: pairs.length,
+                shortest: lengths[0],
+                p25: percentileOf(lengths, 0.25),
+                median: percentileOf(lengths, 0.5),
+                p75: percentileOf(lengths, 0.75),
+                longest: lengths[lengths.length - 1]
+            };
+            corpus.spread = corpus.p25 > 0 ? corpus.p75 / corpus.p25 : Infinity;
+            // Where lengths vary this much, any measure that responds to length will read as
+            // similarity between two responses that share nothing but their size.
+            corpus.heterogeneous = corpus.spread >= 2;
+
+            const { rows, duplicates } = assessMetricsForCohort(pairs, getSelectedMetrics());
+
+            // ---- which families still have anything to say -----------------------------
+            //
+            // Selection only converts redundancy into robustness where there is something to
+            // select from. Two families hold a single measure each, so for them the whole idea is
+            // vacuous: one degeneracy does not degrade the family, it silences it outright. That
+            // asymmetry has to be visible, because "extreme on three of six families" means
+            // something different depending on which three.
+            const familyHealth = METRIC_FAMILIES.map(f => {
+                const members = rows.filter(r => r.family === f.id);
+                const working = members.filter(r =>
+                    (r.verdict === 'healthy' || r.verdict === 'starved') && !r.duplicateOf);
+                return {
+                    id: f.id, label: f.label,
+                    total: members.length,
+                    working: working.length,
+                    names: working.map(r => r.name)
+                };
+            }).filter(f => f.total > 0);
+
             // ---- how many independent views the families really are --------------------
             const familyPairs = boundedSample(typeof allSimilarityPairs !== 'undefined' ? allSimilarityPairs : []);
             const familyIds = METRIC_FAMILIES.map(f => f.id)
@@ -9954,7 +10021,7 @@
                 };
             }
 
-            return { corpus, rows, duplicates, familyCorrelation, effectiveViews, openness };
+            return { corpus, rows, duplicates, familyHealth, familyCorrelation, effectiveViews, openness };
         }
 
         // ============================================================================
@@ -14286,6 +14353,14 @@
                 });
 
                 Object.assign(params, robustScale(adjusted));
+
+                // Kept so a pair can be placed within this measure's own distribution rather than
+                // expressed in its standard deviations. Metrics here are bounded, skewed and
+                // shaped quite differently from one another; percentiles make them comparable in a
+                // way z-scores do not, and stop a measure with a fat tail from dominating the
+                // family it sits in simply by having larger numbers.
+                adjusted.sort((a, b) => a - b);
+                params.quantiles = quantileSketch(adjusted);
             });
 
             console.log(`[COHORT] ${cohortSize} responses, double-centering ${doubleCentering ? 'on' : `off (needs ${DOUBLE_CENTERING_MIN_RESPONSES}+ responses)`}`);
@@ -14329,40 +14404,104 @@
                 .filter(f => f.metrics.some(m => contributingMetrics.includes(m)))
                 .map(f => f.id);
 
-            // Pass one: each family's own score for each pair, as the weighted mean of its
-            // members' z-scores. Averaging within the family is the whole point - eleven lexical
-            // metrics now produce one content score rather than eleven votes - and the per-metric
-            // sliders survive as weights *within* a family.
+            // Which measures are fit to speak for their family.
+            //
+            // Redundancy inside a family only becomes robustness if the family SELECTS among its
+            // members. Averaged blindly, a measure that has degenerated in this cohort is not
+            // ignored - it is mixed in at full weight, pulling the family score toward mush. Ten
+            // syntax measures where six are saturated does not give a robust syntax score; it
+            // gives four real signals diluted by six that cannot separate anyone.
+            //
+            // Judged on the shape of each measure's distribution across the cohort, never on which
+            // pairs it ranked highest, which would pick the measure because it fired on the pair
+            // about to be reported.
+            const assessment = assessMetricsForCohort(pairMetrics, contributingMetrics);
+            window.__lastMetricAssessment = assessment;
+            const setAside = new Set(assessment.rows
+                .filter(r => r.verdict === 'saturated' || r.verdict === 'degenerate' ||
+                             r.verdict === 'absent' || r.duplicateOf)
+                .map(r => r.metric));
+
+            const scorable = (metric) => {
+                const params = metricAdjustmentParams[metric];
+                return !!(params && params.quantiles);
+            };
+            const familyMembers = {}, familyFellBack = [];
+            activeFamilies.forEach(f => {
+                const all = contributingMetrics.filter(m => FAMILY_OF_METRIC[m] === f && scorable(m));
+                const kept = all.filter(m => !setAside.has(m));
+                // Never let selection empty a family outright. If every member was set aside, the
+                // honest report is a weak family, not a missing one.
+                familyMembers[f] = kept.length ? kept : all;
+                if (!kept.length && all.length) familyFellBack.push(f);
+            });
+
+            if (setAside.size) {
+                console.log(`[COMBINE] ${setAside.size} measure(s) set aside as saturated, degenerate or duplicated: ${[...setAside].join(', ')}`);
+            }
+            if (familyFellBack.length) {
+                console.warn(`[COMBINE] every member of ${familyFellBack.join(', ')} was set aside; falling back to the full family rather than dropping it`);
+            }
+
+            // Pass one: each family's own score, as the weighted MEDIAN of its surviving members'
+            // percentiles.
+            //
+            // Percentiles rather than z-scores because these measures are shaped very differently
+            // from one another - some bounded and bunched, some with long tails - and a z-score
+            // silently lets the long-tailed one dominate the average. Median rather than mean
+            // because one measure blowing up should not be able to carry a family on its own; the
+            // family score answers "does this body of evidence favour the pair", and that needs
+            // corroboration among its members. A single measure firing alone is still visible, in
+            // the per-measure rows and their panels, where it belongs.
             const familyRaw = Object.fromEntries(activeFamilies.map(f => [f, []]));
             pairMetrics.forEach(pair => {
                 let weightedRaw = 0, rawWeight = 0;
-                const perFamily = Object.fromEntries(activeFamilies.map(f => [f, { sum: 0, weight: 0 }]));
-
                 contributingMetrics.forEach(metric => {
                     const raw = pair.metrics[metric];
                     if (raw === undefined || raw === null || isNaN(raw)) return;
                     const weight = weights[metric] || 1.0;
-
-                    // Every metric is a similarity bounded in [0, 1], so a plain weighted mean
-                    // of the raw values is a meaningful "how alike are these two" figure.
+                    // Every metric is a similarity bounded in [0, 1], so a plain weighted mean of
+                    // the raw values is a meaningful "how alike are these two" figure.
                     weightedRaw += raw * weight;
                     rawWeight += weight;
-
-                    const family = FAMILY_OF_METRIC[metric];
-                    const bucket = family && perFamily[family];
-                    if (!bucket) return;
-
-                    const params = metricAdjustmentParams[metric];
-                    const adjusted = adjustedMetricValue(metric, pair, responseIndex);
-                    if (adjusted === null) return;
-                    bucket.sum += ((adjusted - params.center) / params.scale) * weight;
-                    bucket.weight += weight;
                 });
-
                 pair.rawSimilarity = rawWeight > 0 ? weightedRaw / rawWeight : 0;
+
+                pair.familyPercentile = {};
+                pair.familyPeak = {};
+
                 activeFamilies.forEach(f => {
-                    const b = perFamily[f];
-                    familyRaw[f].push(b.weight > 0 ? b.sum / b.weight : NaN);
+                    const members = [];
+                    let peak = -1, peakMetric = null;
+
+                    familyMembers[f].forEach(metric => {
+                        const adjusted = adjustedMetricValue(metric, pair, responseIndex);
+                        if (adjusted === null) return;
+                        const p = percentileFromSketch(metricAdjustmentParams[metric].quantiles, adjusted);
+                        if (p === null) return;
+                        members.push({ p, w: weights[metric] || 1.0 });
+                        if (p > peak) { peak = p; peakMetric = metric; }
+                    });
+
+                    if (!members.length) { familyRaw[f].push(NaN); return; }
+
+                    // Weighted median: the percentile at which half the family's weight lies
+                    // below. Keeps the per-measure sliders meaningful within a family without
+                    // letting a single extreme value carry it, which a weighted mean would.
+                    members.sort((a, b) => a.p - b.p);
+                    const totalWeight = members.reduce((s, m) => s + m.w, 0);
+                    let running = 0, median = members[members.length - 1].p;
+                    for (const m of members) {
+                        running += m.w;
+                        if (running >= totalWeight / 2) { median = m.p; break; }
+                    }
+
+                    familyRaw[f].push(median);
+                    pair.familyPercentile[f] = median;
+                    // The strongest single member, kept because the median deliberately suppresses
+                    // it: a lone rare measure firing is real evidence, it is just not FAMILY-level
+                    // evidence. Phase 3 needs both readings.
+                    pair.familyPeak[f] = { value: peak, metric: peakMetric };
                 });
             });
 
@@ -14399,6 +14538,8 @@
                     text1: pair.text1,
                     text2: pair.text2,
                     familyZ: pair.familyZ,
+                    familyPercentile: pair.familyPercentile,
+                    familyPeak: pair.familyPeak,
                     similarity: pair.rawSimilarity,
                     adjustedScore: combined
                 });
@@ -14469,7 +14610,7 @@
         // score is uninterpretable without it.
         function cohortReportHtml(cohort) {
             if (!cohort) return '';
-            const { corpus, rows, familyCorrelation, effectiveViews, openness } = cohort;
+            const { corpus, rows, familyHealth, familyCorrelation, effectiveViews, openness } = cohort;
 
             const familyLabel = (id) => {
                 const f = METRIC_FAMILIES.find(x => x.id === id);
@@ -14556,6 +14697,36 @@
                         ${listOf(duplicated, r => `${escapeHtml(r.name)}`)}.
                         <span style="color:#666;">Each ranks pairs almost identically to a sibling, so it adds a vote rather than a kind of evidence.</span>
                     </p>` : ''}
+
+                    ${familyHealth && familyHealth.length ? `
+                    <p style="margin:12px 0 6px 0; font-weight:600;">What each family has left to say</p>
+                    <p style="margin:0 0 8px 0; color:#666; font-size:12px;">
+                        A family scores on its working measures only; the rest are set aside rather than averaged
+                        in, where they would dilute rather than abstain.
+                    </p>
+                    <div style="display:flex; gap:7px; flex-wrap:wrap; margin-bottom:8px;">
+                        ${familyHealth.map(f => {
+                            const fragile = f.working <= 1;
+                            const dead = f.working === 0;
+                            const colour = dead ? '#922b21' : fragile ? '#b9770e' : '#1e5631';
+                            return `<span title="${escapeHtml(f.names.join(', ') || 'nothing working')}"
+                                style="background:white; border:1px solid ${dead ? '#e6b0aa' : fragile ? '#f5cba7' : '#a9dfbf'}; border-radius:4px; padding:4px 9px; font-size:12px;">
+                                ${escapeHtml(f.label)}
+                                <strong style="color:${colour};">${f.working}</strong><span style="color:#999;">/${f.total}</span>
+                            </span>`;
+                        }).join('')}
+                    </div>
+                    ${familyHealth.some(f => f.working <= 1 && f.total <= 1) ? `<p style="margin:0 0 8px 0; padding:9px 11px; background:#fef5e7; border-radius:4px; color:#7d6608;">
+                        <strong>Single-measure families cannot degrade gracefully.</strong>
+                        ${listOf(familyHealth.filter(f => f.total <= 1), f => escapeHtml(f.label))}
+                        ${familyHealth.filter(f => f.total <= 1).length === 1 ? 'holds' : 'hold'} one measure each, so there is
+                        nothing to select from: if that measure fails, the family is not weakened, it is silent. Read a
+                        conjunction across families with that in mind &mdash; which families agree matters as much as how many.
+                    </p>` : ''}
+                    ${familyHealth.some(f => f.working === 0) ? `<p style="margin:0 0 8px 0; color:#922b21;">
+                        <strong>Contributing nothing here:</strong>
+                        ${listOf(familyHealth.filter(f => f.working === 0), f => escapeHtml(f.label))}.
+                    </p>` : ''}` : ''}
 
                     ${effectiveViews ? `
                     <p style="margin:12px 0 6px 0; font-weight:600;">How many independent views you actually have</p>
