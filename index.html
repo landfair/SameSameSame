@@ -692,14 +692,6 @@
             padding: 2px 4px;
             border-radius: 3px;
         }
-        /* Highlight layers for the evidence view. One layer shows at a time: overlapping
-           colours across four categories are unreadable, and a reader comparing two texts is
-           asking one question at a time anyway. */
-        .hl-phrase   { background: #fff3a3; padding: 1px 0; border-radius: 2px; }
-        .hl-entity   { background: #bfe3ff; padding: 1px 0; border-radius: 2px; }
-        .hl-word     { background: #c8f0d8; padding: 1px 0; border-radius: 2px; }
-        .hl-register { background: #ffd9a8; padding: 1px 0; border-radius: 2px; }
-
         .highlight-exact {
             background: #ffeb3b;
             padding: 2px 4px;
@@ -4784,55 +4776,7 @@
             }
 
             // Map metric IDs to display names
-            const metricIdToName = {
-                'cosine': 'Cosine',
-                'jaccard': 'Jaccard',
-                'ngram': 'N-gram',
-                'sentenceVariance': 'Sentence Variance',
-                'wordCount': 'Word Count',
-                'avgSentenceLength': 'Avg Sentence Length',
-                'temporalBurstiness': 'Temporal Burstiness',
-                'pronounDensity': 'Pronoun Density',
-                'transitionWords': 'Transition Words',
-                'ngramPunctuation': 'N-gram with Punctuation',
-                'wordNgram': '3-Word Phrases',
-                'ngram4': 'N-gram 4-char',
-                'ngram5': 'N-gram 5-char',
-                'ner': 'Named Entity Recognition',
-                'fuzzyNgram3': 'Fuzzy 3-Word Phrases',
-                'fuzzyNgram6': 'Fuzzy 6-Word Phrases',
-                'wordLevelFuzzy3': 'Word-Level 3-Word',
-                'wordLevelFuzzy5': 'Word-Level 5-Word',
-                'bleu': 'BLEU Score',
-                'burrowsDelta': "Burrow's Delta",
-                'burrowsDeltaTopicAgnostic': "Burrow's Delta (Topic-Agnostic)",
-                'functionWordCosine': 'Function-Word Cosine',
-                'pureFunctionWordCosine': 'Pure Function-Word Cosine',
-                'functionWordCharNgram': 'Function-Word Char N-grams',
-                'ttr': 'Type-Token Ratio (TTR)',
-                'mattr': 'Moving-Average TTR (MATTR)',
-                'perplexity': 'Perplexity Fingerprint',
-                'transformerSemantic': '<i class="fas fa-sparkles" style="color: #ffd700;"></i> AI Semantic Similarity',
-                'posSyntactic': 'Syntactic Template (Shaib)',
-                'shaib4': 'Shaib 4-gram',
-                'shaib5': 'Shaib 5-gram',
-                'shaib6': 'Shaib 6-gram',
-                'shaib6lev1': 'Shaib 6-gram (Lev 1)',
-                'shaib6lev2': 'Shaib 6-gram (Lev 2)',
-                'shaib6lev3': 'Shaib 6-gram (Lev 3)',
-                'simplePOS': 'Simple Syntactic Pattern',
-                'functionWordDist': 'Function Word Dist',
-                'rareNgram': 'Shared Rare Phrases',
-                'registerMarkers': 'Chatbot Register',
-                'punctuationProfile': 'Punctuation Profile',
-                'transitionChoice': 'Which Transitions',
-                'sentenceOpeners': 'Sentence Openers',
-                'sharedEntities': 'Shared Names and Figures',
-                'distinctiveVocab': 'Distinctive Vocabulary',
-                'posTemplate4': 'POS 4-gram Templates',
-                'posTemplate6': 'POS 6-gram Templates',
-                'argumentPath': 'Argument Path'
-            };
+            const metricIdToName = METRIC_PANEL_NAMES;
 
             const metricTooltips = {
                 'Cosine': 'Word frequency similarity (click to see calculation)',
@@ -4910,11 +4854,22 @@
 
         async function showMetricDetails(metricName, text1, text2, id1, id2) {
             const modal = document.getElementById('calculationModal');
-            const title = document.getElementById('calculationTitle');
-            const body = document.getElementById('calculationBody');
+            document.getElementById('calculationTitle').textContent = `${metricName} - Calculation Details`;
+            document.getElementById('calculationBody').innerHTML =
+                await metricPanelHtml(metricName, text1, text2, id1, id2) + `
+                <div style="text-align: center; margin-top: 20px;">
+                    <button onclick="closeCalculationModal()"
+                        style="padding: 10px 30px; background: #95a5a6; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">
+                        Close
+                    </button>
+                </div>`;
+            modal.style.display = 'block';
+        }
 
-            title.textContent = `${metricName} - Calculation Details`;
-
+        // The calculation panel for one metric. Split out of showMetricDetails so the pair view
+        // can place the same panel inline beneath the texts it concerns, rather than stacking a
+        // second modal over the first.
+        async function metricPanelHtml(metricName, text1, text2, id1, id2) {
             let detailsHTML = '';
 
             switch(metricName) {
@@ -5037,16 +4992,14 @@
                     break;
             }
 
-            body.innerHTML = detailsHTML + `
-                <div style="text-align: center; margin-top: 20px;">
-                    <button onclick="closeCalculationModal()"
-                        style="padding: 10px 30px; background: #95a5a6; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">
-                        Close
-                    </button>
-                </div>
-            `;
-
-            modal.style.display = 'block';
+            // A metric with no panel registered would otherwise render as nothing and look
+            // broken. Say which one, so the gap is visible rather than puzzling.
+            return detailsHTML || `
+                <div style="background:#fff3cd; padding:13px; border-radius:5px; font-size:13px; color:#7d6608;">
+                    No step-by-step panel is registered for <strong>${escapeHtml(metricName)}</strong>.
+                    The method is described above; the figures beside it are this pair's value and
+                    its position in the cohort.
+                </div>`;
         }
 
         function generateCosineDetails(text1, text2, id1, id2) {
@@ -9774,54 +9727,41 @@
             return weights;
         }
 
+        // Where one pair's value on one metric sits relative to every other pair.
+        //
+        // A number on its own says nothing: 0.31 on shared vocabulary is unremarkable in one
+        // cohort and extraordinary in another. What a reader needs is the comparison the score
+        // is actually built on - how this pair ranks against every other pair in the same set.
+        function metricCohortPosition(metricId, pair) {
+            const all = window.__lastPairMetrics || [];
+            if (!all.length) return null;
+
+            const key = [String(pair.id1), String(pair.id2)].sort().join('\u0000');
+            let value = null;
+            const values = [];
+            all.forEach(p => {
+                const v = p.metrics ? p.metrics[metricId] : undefined;
+                if (typeof v !== 'number' || !isFinite(v)) return;
+                values.push(v);
+                if ([String(p.id1), String(p.id2)].sort().join('\u0000') === key) value = v;
+            });
+            if (value === null || values.length < 3) return null;
+
+            const sorted = values.slice().sort((a, b) => a - b);
+            const below = sorted.filter(v => v < value).length;
+            const percentile = (below / sorted.length) * 100;
+            const median = sorted[sorted.length >> 1];
+            const scale = robustScale(values);
+            const z = scale.scale ? (value - scale.center) / scale.scale : 0;
+
+            return { value, median, z, percentile, pairs: sorted.length,
+                     max: sorted[sorted.length - 1] };
+        }
+
         // ============================================================================
         // EVIDENCE RENDERING
         // ============================================================================
 
-        // Highlight a set of terms in a text.
-        //
-        // Offsets are found on the raw text and the output is assembled with escaping applied
-        // to every part, matched or not. The older helper inserted marks into unescaped text,
-        // which meant a response containing a < or & rendered as broken markup.
-        function highlightTerms(text, terms, className) {
-            const source = String(text);
-            if (!terms || !terms.length) return escapeHtml(source);
-
-            const escaped = terms
-                .filter(t => t && String(t).trim().length > 1)
-                .map(t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-                .sort((a, b) => b.length - a.length);
-            if (!escaped.length) return escapeHtml(source);
-
-            let matches = [];
-            try {
-                const re = new RegExp('(?:' + escaped.join('|') + ')', 'gi');
-                let m;
-                while ((m = re.exec(source)) !== null) {
-                    if (m[0].length === 0) { re.lastIndex++; continue; }
-                    matches.push([m.index, m.index + m[0].length]);
-                }
-            } catch (error) {
-                return escapeHtml(source);
-            }
-
-            // Merge overlaps so nested marks cannot be produced.
-            matches.sort((a, b) => a[0] - b[0]);
-            const merged = [];
-            matches.forEach(([s, e]) => {
-                const last = merged[merged.length - 1];
-                if (last && s <= last[1]) last[1] = Math.max(last[1], e);
-                else merged.push([s, e]);
-            });
-
-            let html = '', cursor = 0;
-            merged.forEach(([s, e]) => {
-                html += escapeHtml(source.slice(cursor, s));
-                html += `<mark class="${className}">${escapeHtml(source.slice(s, e))}</mark>`;
-                cursor = e;
-            });
-            return html + escapeHtml(source.slice(cursor));
-        }
 
         // What each family measures and how, in the plainest terms that stay true.
         const FAMILY_EXPLANATIONS = {
@@ -10075,6 +10015,60 @@
                               'registerMarkers', 'punctuationProfile', 'transitionChoice', 'sentenceOpeners',
                               'sharedEntities', 'distinctiveVocab',
                               'posTemplate4', 'posTemplate6', 'argumentPath'];
+
+        // Metric id to the name its calculation panel is registered under. One map, because the
+        // badge list and the per-metric drill-down both need it, and a metric in one but not the
+        // other silently shows nothing when clicked. Any markup a badge label carried is
+        // stripped: an icon in the label meant the name never matched its panel.
+        const METRIC_PANEL_NAMES = {
+            "cosine": "Cosine",
+            "jaccard": "Jaccard",
+            "ngram": "N-gram",
+            "sentenceVariance": "Sentence Variance",
+            "wordCount": "Word Count",
+            "avgSentenceLength": "Avg Sentence Length",
+            "temporalBurstiness": "Temporal Burstiness",
+            "pronounDensity": "Pronoun Density",
+            "transitionWords": "Transition Words",
+            "ngramPunctuation": "N-gram with Punctuation",
+            "wordNgram": "3-Word Phrases",
+            "ngram4": "N-gram 4-char",
+            "ngram5": "N-gram 5-char",
+            "ner": "Named Entity Recognition",
+            "fuzzyNgram3": "Fuzzy 3-Word Phrases",
+            "fuzzyNgram6": "Fuzzy 6-Word Phrases",
+            "wordLevelFuzzy3": "Word-Level 3-Word",
+            "wordLevelFuzzy5": "Word-Level 5-Word",
+            "bleu": "BLEU Score",
+            "functionWordCosine": "Function-Word Cosine",
+            "pureFunctionWordCosine": "Pure Function-Word Cosine",
+            "functionWordCharNgram": "Function-Word Char N-grams",
+            "ttr": "Type-Token Ratio (TTR)",
+            "mattr": "Moving-Average TTR (MATTR)",
+            "perplexity": "Perplexity Fingerprint",
+            "transformerSemantic": "AI Semantic Similarity",
+            "posSyntactic": "Syntactic Template (Shaib)",
+            "shaib4": "Shaib 4-gram",
+            "shaib5": "Shaib 5-gram",
+            "shaib6": "Shaib 6-gram",
+            "shaib6lev1": "Shaib 6-gram (Lev 1)",
+            "shaib6lev2": "Shaib 6-gram (Lev 2)",
+            "shaib6lev3": "Shaib 6-gram (Lev 3)",
+            "simplePOS": "Simple Syntactic Pattern",
+            "functionWordDist": "Function Word Dist",
+            "rareNgram": "Shared Rare Phrases",
+            "registerMarkers": "Chatbot Register",
+            "punctuationProfile": "Punctuation Profile",
+            "transitionChoice": "Which Transitions",
+            "sentenceOpeners": "Sentence Openers",
+            "sharedEntities": "Shared Names and Figures",
+            "distinctiveVocab": "Distinctive Vocabulary",
+            "posTemplate4": "POS 4-gram Templates",
+            "posTemplate6": "POS 6-gram Templates",
+            "argumentPath": "Argument Path",
+            "burrowsDelta": "Burrow's Delta",
+            "burrowsDeltaTopicAgnostic": "Burrow's Delta (Topic-Agnostic)"
+        };
 
         const FAMILY_OF_METRIC = (() => {
             const map = {};
@@ -14252,7 +14246,6 @@
                 </div>`;
 
             document.getElementById('comparisonModal').style.display = 'block';
-            applyHighlightLayer(view.initialLayer);
         }
 
         function prevMatch() {
@@ -14398,6 +14391,61 @@
                 return nothing('No evidence view for this family yet.');
             };
 
+            // Each metric in the family, with what it scored, how that compares with every
+            // other pair, and its full calculation on request.
+            const metricRows = (family) => {
+                const selected = new Set(getSelectedMetrics());
+                const members = family.metrics.filter(m => selected.has(m));
+                if (!members.length) return '';
+
+                const rows = members.map(metricId => {
+                    const pos = metricCohortPosition(metricId, pair);
+                    const label = METRIC_DISPLAY_NAMES[metricId] || metricId;
+                    const panelName = METRIC_PANEL_NAMES[metricId] || '';
+                    const rowId = `mdetail_${family.id}_${metricId}`;
+
+                    if (!pos) {
+                        return `<tr style="border-bottom:1px solid #eee;">
+                            <td style="padding:6px 9px;">${escapeHtml(label)}</td>
+                            <td colspan="3" style="padding:6px 9px; color:#999; font-size:12px;">no value for this pair</td>
+                        </tr>`;
+                    }
+
+                    const strong = pos.z >= 2;
+                    return `<tr style="border-bottom:1px solid #eee;">
+                        <td style="padding:6px 9px;">${escapeHtml(label)}</td>
+                        <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums;">${pos.value.toFixed(3)}</td>
+                        <td style="padding:6px 9px; text-align:right; font-variant-numeric:tabular-nums; color:${strong ? '#c0392b' : '#666'}; font-weight:${strong ? '700' : '400'};">
+                            ${pos.z >= 0 ? '+' : ''}${pos.z.toFixed(1)} SD
+                        </td>
+                        <td style="padding:6px 9px; font-size:12px; color:#666;">
+                            higher than ${pos.percentile.toFixed(1)}% of the ${pos.pairs.toLocaleString()} pairs
+                            <span style="color:#aaa;">· typical ${pos.median.toFixed(3)}</span>
+                        </td>
+                        <td style="padding:6px 9px; text-align:right;">
+                            ${panelName ? `<button onclick="toggleMetricCalculation('${rowId}', ${JSON.stringify(panelName).replace(/"/g, '&quot;')})"
+                                style="padding:3px 9px; font-size:11px; border:1px solid #d5c9e0; background:white; border-radius:3px; cursor:pointer;">
+                                How this is calculated
+                            </button>` : ''}
+                        </td>
+                    </tr>
+                    <tr id="${rowId}" style="display:none;"><td colspan="5" style="padding:0 9px 12px 9px; background:#fcfbfd;"></td></tr>`;
+                }).join('');
+
+                return `
+                    <h5 style="margin:16px 0 0 0; font-size:13px;">Measures in this family, and where this pair sits</h5>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:6px;">
+                        <thead><tr style="background:#f4f0f8;">
+                            <th style="padding:6px 9px; text-align:left;">Measure</th>
+                            <th style="padding:6px 9px; text-align:right;">This pair</th>
+                            <th style="padding:6px 9px; text-align:right;">vs cohort</th>
+                            <th style="padding:6px 9px; text-align:left;">Position</th>
+                            <th></th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>`;
+            };
+
             return ordered.map(f => {
                 const z = familyZ[f.id];
                 const strong = z >= 2, negative = z < 0;
@@ -14417,6 +14465,7 @@
                         <p style="margin:0 0 6px 0; font-size:13px; color:#444;">${escapeHtml(explain.measures)}</p>
                         <p style="margin:0 0 4px 0; font-size:12px; color:#777;"><strong>How it is detected.</strong> ${escapeHtml(explain.method)}</p>
                         ${evidenceFor(f.id)}
+                        ${metricRows(f)}
                     </div>
                 </details>`;
             }).join('');
@@ -14442,35 +14491,16 @@
         function buildPairEvidenceView(pair) {
             const adjusted = pair.adjustedScore ?? 0;
 
+            // Highlighting is gone. It could only ever mark the families whose evidence happens
+            // to be a span of text, so it drew the eye to shared wording while the measure that
+            // actually flagged a pair - a sentence template, an argument order, a punctuation
+            // habit - left no mark at all. Reading a highlight as "this is why" was therefore
+            // wrong more often than right. The texts are shown plainly; the reasons are set out
+            // below them, each in its own terms.
             const rarePhrases = sharedRareNgramDetails(pair.text1, pair.text2, 60);
             const entities = sharedEntityDetails(pair.text1, pair.text2, 40);
             const vocabulary = sharedVocabularyDetails(pair.text1, pair.text2, 40);
             const style = sharedStyleDetails(pair.text1, pair.text2, 30);
-
-            window.__highlightLayers = {
-                phrases: { label: 'Shared rare phrases', className: 'hl-phrase',
-                           terms: (rarePhrases.shared || []).map(s => s.ngram) },
-                names:   { label: 'Shared names and figures', className: 'hl-entity',
-                           terms: entities.map(e => e.entity) },
-                words:   { label: 'Distinctive shared words', className: 'hl-word',
-                           terms: vocabulary.map(v => v.word) },
-                register:{ label: 'Chatbot register', className: 'hl-register',
-                           terms: style.register.map(r => r.key) }
-            };
-            window.__pairForHighlight = pair;
-
-            const available = Object.entries(window.__highlightLayers).filter(([, l]) => l.terms.length);
-            const initialLayer = available.length ? available[0][0] : 'none';
-
-            const layerButtons = available.map(([key, layer]) => `
-                <button onclick="applyHighlightLayer('${key}')" id="hlBtn_${key}"
-                    style="padding: 5px 11px; border: 1px solid #d5c9e0; background: white; border-radius: 4px;
-                           cursor: pointer; font-size: 12px;">
-                    ${escapeHtml(layer.label)} (${layer.terms.length})
-                </button>`).join('') + `
-                <button onclick="applyHighlightLayer('none')" id="hlBtn_none"
-                    style="padding: 5px 11px; border: 1px solid #d5c9e0; background: white; border-radius: 4px;
-                           cursor: pointer; font-size: 12px;">No highlighting</button>`;
 
             const evidence = renderFamilyEvidence(pair, { rarePhrases, entities, vocabulary, style });
 
@@ -14488,16 +14518,6 @@
                         Every response appears in many pairs, so these values are not independent.
                     </div>
                 </div>
-
-                ${available.length ? `
-                <div style="display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
-                    <span style="font-size: 12px; color: #666; font-weight: 600;">Highlight:</span>
-                    ${layerButtons}
-                </div>` : `
-                <div style="font-size: 12px; color: #888; margin-bottom: 10px;">
-                    Nothing in these two texts can be highlighted - they share no rare phrase, name or
-                    distinctive word. Whatever flagged this pair is in the sections below.
-                </div>`}
 
                 <div class="comparison-grid">
                     <div class="comparison-box">
@@ -14518,7 +14538,7 @@
                 </p>
                 ${evidence}`;
 
-            return { html, initialLayer };
+            return { html };
         }
 
         async function showPairComparison(pair) {
@@ -14530,36 +14550,31 @@
             const view = buildPairEvidenceView(pair);
             document.getElementById('modalBody').innerHTML = view.html;
             modal.style.display = 'block';
-            applyHighlightLayer(view.initialLayer);
         }
 
-        // Swap the highlight layer without rebuilding the modal.
-        function applyHighlightLayer(key) {
-            const pair = window.__pairForHighlight;
-            const layers = window.__highlightLayers || {};
-            if (!pair) return;
+        // Show or hide one metric's full calculation, in place under its row.
+        async function toggleMetricCalculation(rowId, panelName) {
+            const row = document.getElementById(rowId);
+            const pair = window.currentComparisonPair;
+            if (!row || !pair) return;
 
-            const a = document.getElementById('pairTextA'), b = document.getElementById('pairTextB');
-            if (!a || !b) return;
+            if (row.style.display !== 'none') { row.style.display = 'none'; return; }
 
-            const layer = layers[key];
-            if (!layer) {
-                a.innerHTML = escapeHtml(pair.text1);
-                b.innerHTML = escapeHtml(pair.text2);
+            const cell = row.firstElementChild;
+            if (!cell.dataset.loaded) {
+                cell.innerHTML = '<div style="padding:10px; color:#888; font-size:12px;">Working…</div>';
+                row.style.display = 'table-row';
+                try {
+                    cell.innerHTML = await metricPanelHtml(panelName, pair.text1, pair.text2, pair.id1, pair.id2);
+                    cell.dataset.loaded = 'true';
+                } catch (error) {
+                    cell.innerHTML = `<div style="padding:10px; color:#c0392b; font-size:12px;">Could not build this panel: ${escapeHtml(error.message)}</div>`;
+                }
             } else {
-                a.innerHTML = highlightTerms(pair.text1, layer.terms, layer.className);
-                b.innerHTML = highlightTerms(pair.text2, layer.terms, layer.className);
+                row.style.display = 'table-row';
             }
-
-            Object.keys(layers).concat('none').forEach(k => {
-                const btn = document.getElementById('hlBtn_' + k);
-                if (!btn) return;
-                const on = k === key;
-                btn.style.background = on ? '#57068C' : 'white';
-                btn.style.color = on ? 'white' : '#333';
-                btn.style.borderColor = on ? '#57068C' : '#d5c9e0';
-            });
         }
+
 
         function getCommonNgrams(text1, text2) {
             // Split and strip punctuation from each word
