@@ -56,37 +56,46 @@ Averaged blindly, redundancy buys dilution and costs compute.
 
 ---
 
-## Phase 1 — Diagnostics layer
+## Phase 1 — Diagnostics layer — DONE
 
 Nothing downstream can be built until these numbers exist. All computable from
 `window.__lastPairMetrics`.
 
-- [ ] **1.1** Per-metric cohort verdicts: healthy / degenerate / saturated / starved /
+- [x] **1.1** Per-metric cohort verdicts: healthy / degenerate / saturated / starved /
       length-confounded, each with its reason. Keep starved distinct from degenerate — a starved
       metric is uninformative for most pairs but potentially decisive when it fires, so its zeros
       mean "no material", not "no similarity". Do not drop it.
-- [ ] **1.2** Remove the circularity. Verdicts that gate scoring must come from cohort-level
+- [x] **1.2** Remove the circularity. Verdicts that gate scoring must come from cohort-level
       distribution shape only. "Which metrics fired hardest" survives as description and is
       explicitly barred from setting weights.
-- [ ] **1.3** Length-confound test: rank-correlate each metric's pairwise value against
+- [x] **1.3** Length-confound test: rank-correlate each metric's pairwise value against
       `|len1 - len2|` and `min(len1, len2)`. Strong correlation means the metric is partly
       measuring length rather than authorship.
-- [ ] **1.4** Empirical redundancy: metric-to-metric within family, and family-to-family across
+- [x] **1.4** Empirical redundancy: metric-to-metric within family, and family-to-family across
       the six. Report how many independent views the six families actually represent.
-- [ ] **1.5** Assignment openness: median pairwise unweighted lexical overlap. High median means a
+- [x] **1.5** Assignment openness: median pairwise unweighted lexical overlap. High median means a
       closed-ended prompt. Read *unweighted* content evidence down — but rarity-weighted content
       evidence gets **sharper** under a closed prompt, not weaker, so do not discount the family
       wholesale.
 
-## Phase 2 — Fix within-family scoring
+## Phase 2 — Fix within-family scoring — DONE
 
-- [ ] **2.1** Select before averaging: exclude degenerate and saturated metrics from the family
+- [x] **2.1** Select before averaging: exclude degenerate and saturated metrics from the family
       score. This is the change that converts redundancy from dilution into robustness.
-- [ ] **2.2** Replace the weighted mean of z-scores (index.html:14046) with percentile-then-median
+- [x] **2.2** Replace the weighted mean of z-scores (index.html:14046) with percentile-then-median
       over the surviving metrics. Percentiles make differently-scaled and differently-skewed
       metrics comparable; the median stops one blown-up metric from carrying a family.
-- [ ] **2.3** Surface the fragility of the single-metric families (`semantic`, `structure`), where
+- [x] **2.3** Surface the fragility of the single-metric families (`semantic`, `structure`), where
       selection is vacuous and one degeneracy zeroes the family outright.
+- [ ] **2.4 (open decision)** Length-confounded measures are currently flagged but still score.
+      Excluding them would be defensible and would gut the syntax family on short corpora — 17 of
+      the application corpus's measures are confounded. This is a policy call, not a bug fix.
+
+**Note on the combiner.** The family score is the weighted *median* of its members' percentiles,
+which deliberately suppresses a lone measure firing. That is correct for a family score — it
+answers "does this body of evidence favour the pair", which needs corroboration — but it means a
+single rare measure firing alone is not visible at family level. `pair.familyPeak` records the
+strongest single member and which measure produced it, precisely so Phase 3 can read both.
 
 ## Phase 4 — An honest null
 
