@@ -131,16 +131,39 @@ Phase 3 is therefore not a refinement. It is where the discriminating power has 
 The tail model keeps its teeth: on the op-ed cohort a pair at +6 would be about 530x above what
 chance produces. It is conservative, not inert.
 
-## Phase 3 — Conjunction instead of composite
+## Phase 3 — Conjunction instead of composite — DONE
 
-- [ ] **3.1** Per-family cohort percentile for each pair, alongside the existing `familyZ`.
-- [ ] **3.2** Conjunction count: how many families is this pair extreme on, at a stated threshold.
-- [ ] **3.3** Empirical conjunction rarity: across all pairs in this cohort, how many reach that
+- [x] **3.1** Per-family cohort percentile for each pair, alongside the existing `familyZ`.
+- [x] **3.2** Conjunction count: how many families is this pair extreme on, at a stated threshold.
+- [x] **3.3** Empirical conjunction rarity: across all pairs in this cohort, how many reach that
       count or higher. **This becomes the ranking scalar.** It is assumption-free about family
       independence, because observed correlation is already baked into the observed count.
-- [ ] **3.4** Decide the fate of the weighted composite. It may stay as a secondary view, but it
+- [x] **3.4** Decide the fate of the weighted composite. It may stay as a secondary view, but it
       must not order results — it is what makes "extreme on three families" indistinguishable
       from "extreme on one".
+
+**What was built.** Each family's position is now a rank, not a z-score, and the pair score is
+the weighted sum of `-ln(1 - rank)` across families — Fisher's combination, where evidence adds
+as probabilities multiply. A pair at the 90th percentile on all six families scores 13.8; a pair
+at the 99.9th on one and the 50th on the rest scores 10.4, despite holding the more spectacular
+single number. That ordering is the whole point, and the old averaged composite had it backwards.
+
+Because this replaces `adjustedScore` in place, the threshold slider, the Phase 4 null, the
+flagged-respondent view and the family weights all keep working unchanged.
+
+**Deliberately not corrected for family correlation.** The families are not independent
+(effectively 3.4–3.75 views of six), so a raw conjunction count is inflated. Rather than
+discount it in the statistic — which would need a correlation model that is itself an
+assumption — the correction happens where Phase 4 put it: the null is built from this cohort's
+own pairs, which already contain whatever innocent coupling exists. The report shows the
+observed conjunction distribution beside the binomial one *as a diagnostic of coupling*, clearly
+labelled as a property of the measures rather than evidence about anybody.
+
+**It still finds nothing.** The top application pair now stands out on 4 of 5 families, which no
+other pair matches — and the cohort's own shape predicts 0.66 pairs that far out, so it is about
+1.5x chance. The modal says both things: the conjunction is real, and it is what a cohort this
+size produces unaided. That second sentence is what stops the banner being an accusation dressed
+as arithmetic.
 
 ## Phase 5 — Cohort report before pairwise
 
