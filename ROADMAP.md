@@ -1,0 +1,207 @@
+# Homogenometry — measurement roadmap
+
+Working notes on what the tool measures and what needs fixing. Written 2026-09-28.
+
+## The premise, stated plainly
+
+This is not an AI detector. It measures semantic and stylometric similarity between every pair
+of responses in a cohort, and surfaces pairs whose resemblance is improbable enough to be worth
+a conversation. Showing a student that their work shares a specific, unlikely fingerprint with
+someone else's is not the same as accusing them of anything, and the tool should never be built
+as though it were.
+
+Two consequences follow, and they shape everything below:
+
+1. **The claim is about improbability, so the null distribution is load-bearing.** "Statistically
+   nearly impossible" is only as good as the model of what ordinary looks like. Most of the
+   outstanding work is there, not in adding measures.
+
+2. **The evidence is a conjunction, not a magnitude.** One elevated metric is weak. Several
+   *independent kinds* of similarity at once is strong. But that argument only holds if the
+   kinds really are independent, and in the current metric set they mostly are not — twelve
+   variations on lexical overlap are one kind of evidence counted twelve times.
+
+Accepted blind spot: the pairwise approach only sees convergence, so it only works when more
+than one person in a cohort does the same thing. That is a known and accepted limit, not a bug
+to engineer around. It also means the tool works best on large cohorts, which is where the N²
+cost bites.
+
+## Where the code actually stands
+
+- `pair.familyZ` already holds the per-family vector (index.html:14067). The six scores exist.
+- That vector is collapsed to a single weighted average at index.html:14081, and the scalar is
+  what drives ranking and display. The collapse is what destroys the conjunction information.
+- Within-family combination at index.html:14046 is a blind weighted mean of z-scored metrics.
+  Every metric contributes at full weight whether or not it works in this cohort, so a degenerate
+  metric dilutes rather than abstains.
+- `diagnoseMetricSignal()` (index.html:9678) judges a metric by how far its top pairs sit above
+  the typical pair, and `suggestFamilyWeights()` (index.html:9752) turns that into weights. This
+  is circular: it selects metrics *because* they flagged the pairs that are about to be flagged.
+
+## Family inventory
+
+Six families, badly unbalanced:
+
+| Family | Metrics | Note |
+|---|---|---|
+| content | 12 | some genuine n-order length diversity |
+| semantic | 1 | single point of failure |
+| syntax | 10 | some genuine n-order length diversity |
+| structure | 1 | single point of failure; degenerates below 2 passages a side |
+| style | ~17 | rate-based, so uniformly degraded at short length, not diversified |
+| surface | 6 | `ttr`/`mattr` is the one deliberate length-robustness pair |
+
+Redundancy inside a family only buys robustness if the family score *selects* among its metrics.
+Averaged blindly, redundancy buys dilution and costs compute.
+
+---
+
+## Phase 1 — Diagnostics layer
+
+Nothing downstream can be built until these numbers exist. All computable from
+`window.__lastPairMetrics`.
+
+- [ ] **1.1** Per-metric cohort verdicts: healthy / degenerate / saturated / starved /
+      length-confounded, each with its reason. Keep starved distinct from degenerate — a starved
+      metric is uninformative for most pairs but potentially decisive when it fires, so its zeros
+      mean "no material", not "no similarity". Do not drop it.
+- [ ] **1.2** Remove the circularity. Verdicts that gate scoring must come from cohort-level
+      distribution shape only. "Which metrics fired hardest" survives as description and is
+      explicitly barred from setting weights.
+- [ ] **1.3** Length-confound test: rank-correlate each metric's pairwise value against
+      `|len1 - len2|` and `min(len1, len2)`. Strong correlation means the metric is partly
+      measuring length rather than authorship.
+- [ ] **1.4** Empirical redundancy: metric-to-metric within family, and family-to-family across
+      the six. Report how many independent views the six families actually represent.
+- [ ] **1.5** Assignment openness: median pairwise unweighted lexical overlap. High median means a
+      closed-ended prompt. Read *unweighted* content evidence down — but rarity-weighted content
+      evidence gets **sharper** under a closed prompt, not weaker, so do not discount the family
+      wholesale.
+
+## Phase 2 — Fix within-family scoring
+
+- [ ] **2.1** Select before averaging: exclude degenerate and saturated metrics from the family
+      score. This is the change that converts redundancy from dilution into robustness.
+- [ ] **2.2** Replace the weighted mean of z-scores (index.html:14046) with percentile-then-median
+      over the surviving metrics. Percentiles make differently-scaled and differently-skewed
+      metrics comparable; the median stops one blown-up metric from carrying a family.
+- [ ] **2.3** Surface the fragility of the single-metric families (`semantic`, `structure`), where
+      selection is vacuous and one degeneracy zeroes the family outright.
+
+## Phase 4 — An honest null
+
+Deliberately before Phase 3: conjunction counts are only meaningful once "extreme" is defined
+honestly. This is the phase with the least built and the most riding on it.
+
+- [ ] **4.1** Expected false alarms: at N responses there are N(N-1)/2 pairs. State how many
+      should clear the current threshold by chance alone, *before* showing the ranked list.
+- [ ] **4.2** Empirical null from the trimmed bulk rather than a parametric assumption. Most pairs
+      in a cohort are innocent, so fit the reference distribution on the bulk with the top few
+      percent trimmed. Heavy tails in human writing (see Przystalski below) are direct evidence
+      that a MAD-based SD reading misleads exactly where it is being used.
+- [ ] **4.3** Replace SD language with counts anywhere a student might see it. "Four of 124,750
+      pairs in this cohort reach this" is defensible. "+5.3 SD" silently assumes a distribution
+      that has not been verified.
+
+## Phase 3 — Conjunction instead of composite
+
+- [ ] **3.1** Per-family cohort percentile for each pair, alongside the existing `familyZ`.
+- [ ] **3.2** Conjunction count: how many families is this pair extreme on, at a stated threshold.
+- [ ] **3.3** Empirical conjunction rarity: across all pairs in this cohort, how many reach that
+      count or higher. **This becomes the ranking scalar.** It is assumption-free about family
+      independence, because observed correlation is already baked into the observed count.
+- [ ] **3.4** Decide the fate of the weighted composite. It may stay as a secondary view, but it
+      must not order results — it is what makes "extreme on three families" indistinguishable
+      from "extreme on one".
+
+## Phase 5 — Cohort report before pairwise
+
+- [ ] **5.1** Promote `renderSignalReport()` (index.html:14156) from a panel inside the results to
+      a screen shown *before* them, carrying: corpus shape and length distribution, heterogeneity
+      flag, assignment openness, per-metric verdicts with reasons, the redundancy map, and the
+      expected false-alarm count.
+
+A pairwise score is meaningless without the cohort's regime. "94% similar" says nothing until you
+know the cohort median is 92%.
+
+## Phase 6 — Open decisions
+
+- [ ] **6.1** `surface` family: demote out of the evidentiary set entirely? Two responses near the
+      class average score high on it while sharing nothing.
+- [ ] **6.2** `registerMarkers`: a direct AI-detection heuristic inside a tool defined as
+      explicitly not doing AI detection. Retire it, or keep it and accept the inconsistency? The
+      rarity-weighted vocabulary metric already does the honest version of the same job.
+- [ ] **6.3** Single-metric families: broaden `semantic` and `structure`, or accept and document
+      the fragility?
+
+## Phase 7 — Representation
+
+- [ ] **7.1** Lemmatise `distinctiveVocab`. Currently "argues" and "argued" are different words.
+      At 60-word responses that is a meaningful fraction of the shared-word evidence. Compromise
+      can do this today. Quick win.
+- [ ] **7.2** Richer feature vector through the existing Delta machinery: lemma 1-3-grams, POS
+      1-3-grams, morphological unigrams, cohort-z-scored and compared pairwise. Reuses
+      Burrows/Cosine Delta rather than adding a classifier.
+- [ ] **7.3** Dependency bigrams. Highest-value missing feature and currently blocked: needs a
+      dependency parser, Compromise has none, spaCy is not available in a single HTML file.
+      Parked unless the deployment model changes.
+
+## Phase 8 — Isolation view
+
+The pairwise matrix already contains this: the left tail of the pair distribution is the
+suspiciously close pair, the right tail of each response's aggregate distance is the isolated
+student.
+
+- [ ] **8.1** Per-response isolation scores (min and mean distance to all others), with per-family
+      decomposition for the "in what specific ways" part.
+- [ ] **8.2** Equity guardrails. On an admissions corpus this will preferentially flag non-native
+      speakers, and that is what the measurement does rather than an artefact that can be
+      engineered away. The two tails are not symmetric: improbable convergence has few innocent
+      explanations, improbable divergence has many. Keep this in a separate register from the
+      pairwise findings, and build nothing that puts it in front of a student.
+
+---
+
+## Suggested order
+
+1 → 2 → 4 → 3 → 5, with 6 and 7.1 taken opportunistically and 8 last.
+
+Cost: phases 1-5 are all O(pairs × metrics) over data already held — cheap even at large N.
+Phase 8 needs the full matrix retained, which is the part that actually bites at cohort scale.
+
+---
+
+## Reference: Przystalski et al. 2025
+
+*Stylometry recognizes human and LLM-generated texts in short samples*, arXiv:2507.00838v2.
+Read as a methods paper, not a results paper — it is supervised classification, which is a
+different problem from unsupervised pairwise similarity. What transfers:
+
+- **Human writing is heavy-tailed in POS n-gram space; machine writing is not.** Their §4.5.1:
+  narrow "red bulks" for models against "long grey outlying distributions" for humans. This is
+  the evidence behind Phase 4.2 — the null is not well-behaved in the tail, which is the only
+  place this tool ever looks.
+- **Their human corpus was multi-authorial**, with contributors of varying styles and linguistic
+  competency (§5.1) — heterogeneous in the same way a student cohort is, which strengthens the
+  analogy.
+- **Representation beat curation**: ~3,000 raw normalised frequencies scored MCC 0.87; 196
+  curated interpretable features scored 0.72. Roughly 0.15 MCC is what explainability cost them.
+  Worth knowing the price, since interpretability is non-negotiable here.
+- **No culling.** They kept every feature regardless of document frequency. Under a
+  rare-coincidence framing the rarest features are where the signal lives, so pruning
+  low-frequency features for speed would destroy the evidence. Aligned with the IDF approach.
+- **Cross-domain collapse**: macro-F1 fell to 0.48/0.54 on an external benchmark against 0.81 for
+  the top submission and 0.66 for a plain logistic-regression baseline. Never carry fitted
+  weights from one assignment to another.
+- **Group CV by topic** — the control the reference-essay weight fitting needs, or the fit partly
+  learns "this prompt" rather than "this authorship".
+
+What does *not* transfer: every accuracy figure (supervised, labelled), the paraphrase-robustness
+result (says a trained detector survives paraphrase, says nothing about whether two paraphrased
+texts stay similar to each other), the commercial-detector benchmark, and the model-specific
+lexical tells.
+
+Also cited there and worth remembering: Brennan et al. 2012 — deliberate manual obfuscation
+reduces stylometric accuracy to roughly chance, achievable by people with no prior knowledge of
+stylometry. This tool finds unwitting convergence. It does not find determined evasion, and
+should not be described as though it does.

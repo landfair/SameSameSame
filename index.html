@@ -9660,6 +9660,304 @@
         }
 
         // ============================================================================
+        // COHORT DIAGNOSTICS
+        // ============================================================================
+        //
+        // Before any pair is worth looking at, the cohort itself has to be characterised. A
+        // similarity score means nothing alone: 0.94 is unremarkable where the cohort median is
+        // 0.92 and extraordinary where it is 0.2. Worse, a measure can be broken for this
+        // particular corpus in ways no single pair reveals - saturated because the prompt is
+        // close-ended, starved because the responses are too short to contain the n-grams it
+        // counts, or quietly tracking length rather than authorship.
+        //
+        // These are properties of the corpus, not of any pair, and they are what a reader needs
+        // first.
+        //
+        // One rule governs everything here: a verdict that will gate scoring may depend only on
+        // the SHAPE of a measure's distribution across the cohort, never on which pairs came out
+        // on top. Judging a measure by how extreme its most extreme pair is, and then using that
+        // judgement to decide which pairs are extreme, is circular - it picks the measure because
+        // it flagged the pair that is about to be flagged, and the noisiest measure wins, since
+        // noise produces outliers too. Which measures fired hardest survives as description; it
+        // is barred from setting weights.
+
+        // Ranks with ties averaged. Tie handling is not optional here: a starved measure keeps
+        // most of its mass at exactly zero, and ranking those arbitrarily would invent an ordering
+        // that is not in the data and report correlations that are not there.
+        function rankedValues(values) {
+            const order = values.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+            const ranks = new Array(values.length);
+            let i = 0;
+            while (i < order.length) {
+                let j = i;
+                while (j + 1 < order.length && order[j + 1][0] === order[i][0]) j++;
+                const shared = (i + j) / 2;
+                for (let k = i; k <= j; k++) ranks[order[k][1]] = shared;
+                i = j + 1;
+            }
+            return ranks;
+        }
+
+        function pearsonOf(a, b) {
+            const n = Math.min(a.length, b.length);
+            if (n < 3) return 0;
+            let ma = 0, mb = 0;
+            for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+            ma /= n; mb /= n;
+            let num = 0, da = 0, db = 0;
+            for (let i = 0; i < n; i++) {
+                const x = a[i] - ma, y = b[i] - mb;
+                num += x * y; da += x * x; db += y * y;
+            }
+            return (da > 1e-12 && db > 1e-12) ? num / Math.sqrt(da * db) : 0;
+        }
+
+        function spearmanOf(a, b) { return pearsonOf(rankedValues(a), rankedValues(b)); }
+
+        // Eigenvalues of a small symmetric matrix by cyclic Jacobi rotation. Used only to
+        // summarise how many independent views the family scores really represent: for a
+        // correlation matrix the eigenvalues sum to the number of families, and the participation
+        // ratio (sum L)^2 / sum(L^2) counts how many of them carry real weight. Six families that
+        // all move together score near 1; six genuinely independent ones score near 6.
+        function symmetricEigenvalues(M, sweeps = 40) {
+            const n = M.length;
+            const A = M.map(row => row.slice());
+            for (let s = 0; s < sweeps; s++) {
+                let off = 0;
+                for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += A[p][q] * A[p][q];
+                if (off < 1e-12) break;
+                for (let p = 0; p < n; p++) {
+                    for (let q = p + 1; q < n; q++) {
+                        if (Math.abs(A[p][q]) < 1e-15) continue;
+                        const theta = (A[q][q] - A[p][p]) / (2 * A[p][q]);
+                        const sign = theta >= 0 ? 1 : -1;
+                        const t = sign / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+                        const c = 1 / Math.sqrt(t * t + 1), sn = t * c;
+                        for (let k = 0; k < n; k++) {
+                            const akp = A[k][p], akq = A[k][q];
+                            A[k][p] = c * akp - sn * akq;
+                            A[k][q] = sn * akp + c * akq;
+                        }
+                        for (let k = 0; k < n; k++) {
+                            const apk = A[p][k], aqk = A[q][k];
+                            A[p][k] = c * apk - sn * aqk;
+                            A[q][k] = sn * apk + c * aqk;
+                        }
+                    }
+                }
+            }
+            return A.map((row, i) => row[i]).sort((x, y) => y - x);
+        }
+
+        const COHORT_CORRELATION_SAMPLE = 20000;
+
+        // Systematic sample, so the correlation work stays bounded on a large cohort. Correlation
+        // converges fast - twenty thousand pairs answer the question as well as a hundred thousand
+        // - and this keeps the diagnostics affordable at the cohort sizes where they matter most.
+        // Deterministic, so the report does not shift between runs on the same data.
+        function boundedSample(list) {
+            if (!list || list.length <= COHORT_CORRELATION_SAMPLE) return list || [];
+            const step = list.length / COHORT_CORRELATION_SAMPLE;
+            const out = [];
+            for (let i = 0; i < COHORT_CORRELATION_SAMPLE; i++) out.push(list[Math.floor(i * step)]);
+            return out;
+        }
+
+        function percentileOf(sortedValues, fraction) {
+            if (!sortedValues.length) return NaN;
+            const at = Math.min(sortedValues.length - 1, Math.max(0, Math.floor(sortedValues.length * fraction)));
+            return sortedValues[at];
+        }
+
+        function diagnoseCohort() {
+            const pairs = window.__lastPairMetrics || [];
+            if (pairs.length < 5) return null;
+
+            // ---- corpus shape ---------------------------------------------------------
+            const wordsOf = new Map();
+            const lengthOf = (text) => {
+                if (!wordsOf.has(text)) wordsOf.set(text, String(text).trim().split(/\s+/).filter(Boolean).length);
+                return wordsOf.get(text);
+            };
+            pairs.forEach(p => { lengthOf(p.text1); lengthOf(p.text2); });
+
+            const lengths = [...wordsOf.values()].sort((a, b) => a - b);
+            const corpus = {
+                responses: lengths.length,
+                pairs: pairs.length,
+                shortest: lengths[0],
+                p25: percentileOf(lengths, 0.25),
+                median: percentileOf(lengths, 0.5),
+                p75: percentileOf(lengths, 0.75),
+                longest: lengths[lengths.length - 1]
+            };
+            corpus.spread = corpus.p25 > 0 ? corpus.p75 / corpus.p25 : Infinity;
+            // Where lengths vary this much, any measure that responds to length will read as
+            // similarity between two responses that share nothing but their size.
+            corpus.heterogeneous = corpus.spread >= 2;
+
+            const sample = boundedSample(pairs);
+            const sampleLengthGap = sample.map(p => Math.abs(lengthOf(p.text1) - lengthOf(p.text2)));
+            const sampleLengthFloor = sample.map(p => Math.min(lengthOf(p.text1), lengthOf(p.text2)));
+
+            // ---- per-measure verdicts -------------------------------------------------
+            const rows = getSelectedMetrics().map(metric => {
+                const row = {
+                    metric,
+                    name: METRIC_PANEL_NAMES[metric] || metric,
+                    family: FAMILY_OF_METRIC[metric] || null,
+                    flags: []
+                };
+
+                const values = [];
+                pairs.forEach(p => {
+                    const v = p.metrics[metric];
+                    if (typeof v === 'number' && isFinite(v)) values.push(v);
+                });
+                row.coverage = values.length / pairs.length;
+
+                if (values.length < 5) {
+                    row.verdict = 'absent';
+                    row.why = 'produced no usable values for this cohort';
+                    return row;
+                }
+
+                const sorted = values.slice().sort((a, b) => a - b);
+                row.low = sorted[0];
+                row.high = sorted[sorted.length - 1];
+                row.median = percentileOf(sorted, 0.5);
+                const span = row.high - row.low;
+
+                if (span < 1e-9) {
+                    row.verdict = 'degenerate';
+                    row.why = 'identical for every pair, so it cannot separate anyone';
+                    return row;
+                }
+
+                row.atFloor = values.filter(v => v <= row.low + span * 1e-6).length / values.length;
+                row.position = (row.median - row.low) / span;
+
+                // Does this measure track length rather than authorship? Two responses scoring
+                // alike because both are sixty words long is not a fingerprint.
+                const mv = [], gap = [], floor = [];
+                sample.forEach((p, i) => {
+                    const v = p.metrics[metric];
+                    if (typeof v === 'number' && isFinite(v)) {
+                        mv.push(v); gap.push(sampleLengthGap[i]); floor.push(sampleLengthFloor[i]);
+                    }
+                });
+                if (mv.length >= 10) {
+                    row.rhoLengthGap = spearmanOf(mv, gap);
+                    row.rhoLengthFloor = spearmanOf(mv, floor);
+                    row.lengthConfounded =
+                        Math.max(Math.abs(row.rhoLengthGap), Math.abs(row.rhoLengthFloor)) >= 0.5;
+                }
+
+                if (row.atFloor >= 0.7) {
+                    // Deliberately distinct from degenerate, and the distinction carries weight.
+                    // A starved measure has nothing to say about most pairs because there was no
+                    // material for it to find - too few long n-grams in a short response, no named
+                    // entities in an abstract prompt - but when it does fire, it fires on something
+                    // genuinely rare. Its zeros mean "no material", not "no similarity". Dropping
+                    // it would discard some of the strongest rare-coincidence evidence there is.
+                    row.verdict = 'starved';
+                    row.why = `${Math.round(row.atFloor * 100)}% of pairs sit at its floor - keep it, but read its zeros as "no material" rather than "no similarity"`;
+                } else if (row.position >= 0.85) {
+                    row.verdict = 'saturated';
+                    row.why = 'nearly every pair scores near the top of its range, leaving no headroom to tell anyone apart';
+                } else {
+                    row.verdict = 'healthy';
+                    row.why = 'spread across its range with room to separate pairs';
+                }
+
+                if (row.lengthConfounded) row.flags.push('tracks response length');
+                return row;
+            });
+
+            // ---- redundancy within families -------------------------------------------
+            //
+            // Two measures that rank the pairs almost identically are one piece of evidence
+            // counted twice. That matters more here than it would in a classifier: the entire
+            // argument for taking a pair seriously is that several INDEPENDENT kinds of similarity
+            // coincide, and a duplicate inflates that count without adding a kind.
+            const comparable = rows.filter(r =>
+                r.verdict !== 'absent' && r.verdict !== 'degenerate' && r.coverage >= 0.95);
+            const rankOf = {};
+            comparable.forEach(r => {
+                rankOf[r.metric] = rankedValues(sample.map(p => {
+                    const v = p.metrics[r.metric];
+                    return (typeof v === 'number' && isFinite(v)) ? v : r.median;
+                }));
+            });
+
+            const duplicates = [];
+            for (let i = 0; i < comparable.length; i++) {
+                for (let j = i + 1; j < comparable.length; j++) {
+                    const a = comparable[i], b = comparable[j];
+                    if (a.family !== b.family) continue;
+                    const rho = pearsonOf(rankOf[a.metric], rankOf[b.metric]);
+                    if (rho >= 0.95) {
+                        duplicates.push({ a: a.metric, b: b.metric, aName: a.name, bName: b.name, family: a.family, rho });
+                        if (!b.duplicateOf) {
+                            b.duplicateOf = a.metric;
+                            b.flags.push(`ranks pairs almost identically to ${a.name}`);
+                        }
+                    }
+                }
+            }
+
+            // ---- how many independent views the families really are --------------------
+            const familyPairs = boundedSample(typeof allSimilarityPairs !== 'undefined' ? allSimilarityPairs : []);
+            const familyIds = METRIC_FAMILIES.map(f => f.id)
+                .filter(id => familyPairs.some(p => isFinite(p.familyZ && p.familyZ[id])));
+            const completeRows = familyPairs.filter(p => familyIds.every(id => isFinite(p.familyZ && p.familyZ[id])));
+
+            const familyCorrelation = [];
+            let effectiveViews = null;
+            if (familyIds.length >= 2 && completeRows.length >= 10) {
+                const ranked = familyIds.map(id => rankedValues(completeRows.map(p => p.familyZ[id])));
+                const C = familyIds.map((_, i) => familyIds.map((_, j) => i === j ? 1 : pearsonOf(ranked[i], ranked[j])));
+                familyIds.forEach((idA, i) => {
+                    for (let j = i + 1; j < familyIds.length; j++) {
+                        familyCorrelation.push({ a: idA, b: familyIds[j], rho: C[i][j] });
+                    }
+                });
+                const eigenvalues = symmetricEigenvalues(C).map(v => Math.max(0, v));
+                const total = eigenvalues.reduce((s, v) => s + v, 0);
+                const square = eigenvalues.reduce((s, v) => s + v * v, 0);
+                if (square > 1e-9) {
+                    effectiveViews = { families: familyIds.length, effective: (total * total) / square };
+                }
+            }
+            familyCorrelation.sort((x, y) => Math.abs(y.rho) - Math.abs(x.rho));
+
+            // ---- how open-ended the assignment is --------------------------------------
+            //
+            // If every response shares most of its vocabulary, that is the prompt talking, not the
+            // writers, and unweighted content overlap should be read down. Note the asymmetry: the
+            // rarity-weighted content measures get SHARPER under a close prompt, not weaker, since
+            // a narrower shared space makes an unusual shared word stand out further against it.
+            // "Close-ended, so ignore the content family" would throw away the best evidence at
+            // exactly the moment it is most informative.
+            let openness = null;
+            const opennessMetric = ['jaccard', 'cosine', 'wordNgram'].find(m =>
+                pairs.some(p => typeof p.metrics[m] === 'number' && isFinite(p.metrics[m])));
+            if (opennessMetric) {
+                const values = pairs.map(p => p.metrics[opennessMetric])
+                    .filter(v => typeof v === 'number' && isFinite(v)).sort((a, b) => a - b);
+                const median = percentileOf(values, 0.5);
+                openness = {
+                    metric: opennessMetric,
+                    name: METRIC_PANEL_NAMES[opennessMetric] || opennessMetric,
+                    median,
+                    verdict: median >= 0.5 ? 'close-ended' : median >= 0.25 ? 'guided' : 'open'
+                };
+            }
+
+            return { corpus, rows, duplicates, familyCorrelation, effectiveViews, openness };
+        }
+
+        // ============================================================================
         // WHICH MEASURES CARRIED SIGNAL
         // ============================================================================
         //
@@ -9669,11 +9967,15 @@
         // writes nothing chatbot-like leaves the register markers silent. None of that is
         // knowable in advance, and all of it is visible afterwards.
         //
-        // So everything runs, and this reports what happened. With reference texts the honest
-        // answer comes from fitting against them. Without, a measure is judged on whether it
-        // singles anybody out: one that spreads every pair evenly across its range has told you
-        // nothing, however much variance it has. The diagnostic is how far the top pairs sit
-        // above the typical pair, in robust standard deviations.
+        // So everything runs, and this reports what happened: how far the top pairs sit above the
+        // typical pair, in robust standard deviations.
+        //
+        // DESCRIPTION ONLY. This figure must not decide which measures count, because it is
+        // computed from the same extreme pairs those measures are about to be used to flag -
+        // selecting on it would pick a measure because it fired on the pair that is about to be
+        // reported, and the noisiest measure would win. Which measures are fit to vote is decided
+        // by diagnoseCohort() on distribution shape alone; which ones DISCRIMINATE needs labels,
+        // which means reference texts and fitFamilyWeightsFromReferences().
 
         function diagnoseMetricSignal() {
             if (!allSimilarityPairs.length) return null;
@@ -9747,23 +10049,33 @@
             return { rows: rows.sort((x, y) => y.reach - x.reach), pairs: pairsWithMetrics.length };
         }
 
-        // Suggested family weights from the diagnosis: a family is worth as much as the reach of
-        // its best non-duplicate measure, rescaled so the strongest family sits at 2.0.
-        function suggestFamilyWeights(diagnosis) {
-            if (!diagnosis) return null;
-            const best = {};
-            diagnosis.rows.forEach(r => {
-                if (!r.family || r.family === '-' || r.duplicateOf) return;
-                best[r.family] = Math.max(best[r.family] || 0, r.reach);
+        // Which families should be voting at all.
+        //
+        // Without reference texts there is no honest way to learn which family DISCRIMINATES -
+        // that needs labels. What the cohort can say is which families are still WORKING: one
+        // whose every measure is degenerate or saturated in this corpus should not be voting, and
+        // one that still has measures with room to separate pairs should keep its default weight.
+        //
+        // An earlier version scored each family by how far its most extreme pair sat above the
+        // typical pair. That was circular: it rewarded whichever family produced the biggest
+        // outlier, then used that weighting to decide which pairs were outliers, so the noisiest
+        // measure won - noise produces outliers too. Reach is still reported below, as
+        // description. It no longer sets anything.
+        function suggestFamilyWeights(cohort) {
+            if (!cohort || !cohort.rows) return null;
+
+            const workingIn = {};
+            cohort.rows.forEach(r => {
+                if (!r.family || r.duplicateOf) return;
+                // Starved measures count as working: they say nothing about most pairs, but what
+                // they do say is rare, and rare is the whole point.
+                if (r.verdict === 'healthy' || r.verdict === 'starved') {
+                    workingIn[r.family] = (workingIn[r.family] || 0) + 1;
+                }
             });
-            const peak = Math.max(...Object.values(best), 0);
-            if (!peak) return null;
 
             const weights = {};
-            METRIC_FAMILIES.forEach(f => {
-                const reach = best[f.id] || 0;
-                weights[f.id] = Math.round((2 * reach / peak) * 10) / 10;
-            });
+            METRIC_FAMILIES.forEach(f => { weights[f.id] = workingIn[f.id] ? f.defaultWeight : 0; });
             return weights;
         }
 
@@ -14153,12 +14465,124 @@
         }
 
         // What the analysis learned about its own measures.
+        // The cohort's own shape, rendered before anything about individual pairs. A similarity
+        // score is uninterpretable without it.
+        function cohortReportHtml(cohort) {
+            if (!cohort) return '';
+            const { corpus, rows, familyCorrelation, effectiveViews, openness } = cohort;
+
+            const familyLabel = (id) => {
+                const f = METRIC_FAMILIES.find(x => x.id === id);
+                return f ? f.label : id;
+            };
+            const group = (verdict) => rows.filter(r => r.verdict === verdict && !r.duplicateOf);
+            const confounded = rows.filter(r => r.lengthConfounded && r.verdict !== 'absent');
+            const duplicated = rows.filter(r => r.duplicateOf);
+            const listOf = (items, render, limit = 8) =>
+                items.slice(0, limit).map(render).join(', ') +
+                (items.length > limit ? `, and ${items.length - limit} more` : '');
+            const nameOf = (r) => `<span title="${escapeHtml(r.why || '')}">${escapeHtml(r.name)}</span>`;
+
+            const healthy = group('healthy'), starved = group('starved');
+            const saturated = group('saturated'), degenerate = group('degenerate').concat(group('absent'));
+
+            return `
+            <details open style="border:1px solid #c9d8e0; border-left:4px solid #1f6f8b; border-radius:6px; background:#f6fafc; margin-bottom:12px;">
+                <summary style="cursor:pointer; padding:11px 13px; font-weight:600; color:#1f6f8b;">
+                    This cohort, before any pair
+                </summary>
+                <div style="padding:0 13px 14px 13px; font-size:13px; color:#444;">
+
+                    <p style="margin:0 0 10px 0;">
+                        <strong>${corpus.responses.toLocaleString()} responses</strong>, giving
+                        ${corpus.pairs.toLocaleString()} pairs. Lengths run
+                        ${corpus.shortest}&ndash;${corpus.longest} words, with the middle half between
+                        <strong>${corpus.p25}</strong> and <strong>${corpus.p75}</strong> and a median of
+                        <strong>${corpus.median}</strong>.
+                    </p>
+
+                    ${corpus.heterogeneous ? `<p style="margin:0 0 10px 0; padding:9px 11px; background:#fef5e7; border-radius:4px; color:#7d6608;">
+                        <strong>Lengths vary widely here</strong> (the upper quartile is
+                        ${corpus.spread.toFixed(1)}&times; the lower). Any measure that responds to length
+                        will score two responses alike for sharing nothing but their size. The measures
+                        where that is actually happening are named below.
+                    </p>` : ''}
+
+                    ${openness ? `<p style="margin:0 0 10px 0;">
+                        <strong>The assignment looks ${escapeHtml(openness.verdict)}.</strong>
+                        Median unweighted word overlap across all pairs is
+                        ${(openness.median * 100).toFixed(0)}%${openness.verdict === 'close-ended' ? `, which is the prompt talking rather than the writers - read plain word-overlap evidence down accordingly` : ''}.
+                        ${openness.verdict === 'close-ended' ? `<br><span style="color:#666;">This does <em>not</em> discount the rarity-weighted content measures. A narrower shared
+                        vocabulary makes an unusual shared word stand out <em>further</em> against it, so those
+                        get sharper here, not weaker.</span>` : ''}
+                    </p>` : ''}
+
+                    <p style="margin:12px 0 6px 0; font-weight:600;">Which measures are fit to vote</p>
+                    <p style="margin:0 0 8px 0; color:#666; font-size:12px;">
+                        Judged on the shape of each measure's spread across this cohort &mdash; never on which
+                        pairs it ranked highest, which would pick the measure because it flagged the pair
+                        about to be flagged.
+                    </p>
+
+                    ${healthy.length ? `<p style="margin:0 0 7px 0;">
+                        <strong style="color:#1e5631;">Working (${healthy.length}):</strong> ${listOf(healthy, nameOf)}.
+                    </p>` : `<p style="margin:0 0 7px 0; color:#922b21;">
+                        <strong>No measure is spread healthily across this cohort.</strong> Treat everything below with suspicion.
+                    </p>`}
+
+                    ${starved.length ? `<p style="margin:0 0 7px 0;">
+                        <strong style="color:#b9770e;">Starved (${starved.length}):</strong> ${listOf(starved, nameOf)}.
+                        <span style="color:#666;">Most pairs sit at zero because there was no material to find, not because
+                        there was no similarity. Kept in &mdash; when one of these fires it fires on something rare.</span>
+                    </p>` : ''}
+
+                    ${saturated.length ? `<p style="margin:0 0 7px 0;">
+                        <strong style="color:#b9770e;">Saturated (${saturated.length}):</strong> ${listOf(saturated, nameOf)}.
+                        <span style="color:#666;">Nearly every pair scores near the top, so there is no headroom left to tell anyone apart.</span>
+                    </p>` : ''}
+
+                    ${degenerate.length ? `<p style="margin:0 0 7px 0;">
+                        <strong style="color:#922b21;">Not usable (${degenerate.length}):</strong> ${listOf(degenerate, nameOf)}.
+                    </p>` : ''}
+
+                    ${confounded.length ? `<p style="margin:0 0 7px 0; padding:9px 11px; background:#fef5e7; border-radius:4px; color:#7d6608;">
+                        <strong>Tracking length rather than authorship:</strong>
+                        ${listOf(confounded, r => `${escapeHtml(r.name)} <span style="color:#a08040;">(&rho;&nbsp;${(Math.abs(r.rhoLengthGap) > Math.abs(r.rhoLengthFloor) ? r.rhoLengthGap : r.rhoLengthFloor).toFixed(2)})</span>`)}.
+                        These partly measure how alike two responses are in size.
+                    </p>` : ''}
+
+                    ${duplicated.length ? `<p style="margin:0 0 7px 0;">
+                        <strong>Duplicated within their family (${duplicated.length}):</strong>
+                        ${listOf(duplicated, r => `${escapeHtml(r.name)}`)}.
+                        <span style="color:#666;">Each ranks pairs almost identically to a sibling, so it adds a vote rather than a kind of evidence.</span>
+                    </p>` : ''}
+
+                    ${effectiveViews ? `
+                    <p style="margin:12px 0 6px 0; font-weight:600;">How many independent views you actually have</p>
+                    <p style="margin:0 0 8px 0;">
+                        ${effectiveViews.families} families scored, but they move together enough to count as about
+                        <strong>${effectiveViews.effective.toFixed(1)}</strong> independent views of this cohort.
+                        ${effectiveViews.effective < effectiveViews.families - 1 ? `<br><span style="color:#7d6608;">A pair looking alike on several families at once is therefore less surprising than the
+                        raw count suggests &mdash; those families are partly restating each other.</span>` : ''}
+                    </p>
+                    ${familyCorrelation.length ? `<div style="font-size:12px; color:#666;">
+                        Most-correlated families:
+                        ${familyCorrelation.slice(0, 3).map(c =>
+                            `${escapeHtml(familyLabel(c.a))}&ndash;${escapeHtml(familyLabel(c.b))} <strong>${c.rho.toFixed(2)}</strong>`).join(', ')}
+                    </div>` : ''}` : ''}
+                </div>
+            </details>`;
+        }
+
         function renderSignalReport() {
             const host = document.getElementById('signalReport');
             if (!host) return;
 
             const diagnosis = diagnoseMetricSignal();
             if (!diagnosis) { host.innerHTML = ''; return; }
+
+            const cohort = diagnoseCohort();
+            window.__lastCohortDiagnosis = cohort;
 
             const referenceCount = responses.filter(r => r.isReference).length;
             const strong = diagnosis.rows.filter(r => r.reach >= 4 && !r.duplicateOf);
@@ -14167,13 +14591,14 @@
             const duplicates = diagnosis.rows.filter(r => r.duplicateOf);
             const name = id => METRIC_DISPLAY_NAMES[id] || id;
 
-            const suggested = suggestFamilyWeights(diagnosis);
+            const suggested = suggestFamilyWeights(cohort);
             window.__suggestedWeights = suggested;
 
             const list = (items, render) => items.slice(0, 6).map(render).join(', ') +
                 (items.length > 6 ? `, and ${items.length - 6} more` : '');
 
             host.innerHTML = `
+            ${cohortReportHtml(cohort)}
             <details open style="border:1px solid #d5c9e0; border-left:4px solid #57068C; border-radius:6px; background:#faf7fd;">
                 <summary style="cursor:pointer; padding:11px 13px; font-weight:600; color:#57068C;">
                     What carried signal in this analysis
