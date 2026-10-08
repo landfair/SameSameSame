@@ -27,3 +27,6 @@ test-*.html
 
 # Other
 generate-metrics.txt
+
+# Contains real VIP application responses
+NYUSample.html
