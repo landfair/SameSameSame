@@ -30,3 +30,6 @@ generate-metrics.txt
 
 # Contains real VIP application responses
 NYUSample.html
+
+# Separate offline rewrite; vendored ONNX runtime is ~40MB of binaries
+NewHomogenometry/
