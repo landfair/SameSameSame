@@ -165,6 +165,47 @@ other pair matches — and the cohort's own shape predicts 0.66 pairs that far o
 size produces unaided. That second sentence is what stops the banner being an accusation dressed
 as arithmetic.
 
+## Phase 9 — Reference texts must not define the class — DONE
+
+Found by a code-review brief written against the `NewHomogenometry/` rewrite (its invariant 1:
+"document frequency comes from the baseline only"). `index.html` did not do this. All four
+rarity indices were built from every response:
+
+```
+buildRareNgramIndex(responses.map(r => r.text))
+buildStyleProfileStats(responses.map(r => r.text))
+buildContentProfileStats(responses.map(r => r.text))
+buildPosTemplateStats(responses.map(r => r.text))
+```
+
+`isReference` was used for weight-fitting and display, never for excluding references from the
+statistics that define what is ordinary in the class.
+
+The weight is `log((N+1)/(df+1)) + 1`, so each reference sharing a phrase raised that phrase's
+document frequency and lowered its weight — and the phrases references share are precisely the
+ones a reference was added to detect. The more references seeded, the more the signal was
+suppressed. This would have quietly broken the reference-essay test before it ran.
+
+- [x] **9.1** `baselineTexts()` returns the non-reference responses, with a fallback when fewer
+      than three remain. The four rarity indices read it. Per-text profiles are built on demand,
+      so references are still scored normally against every student — only the question "how
+      unusual is this in the class?" is now asked of the class alone.
+- [x] **9.2** Changing the reference column used to re-tag and redraw, on the stated grounds that
+      flags "only affect how results are grouped and reported, not the pairwise metrics
+      themselves". That is no longer true: flags now decide every rarity weight. The handler
+      re-runs the analysis when the flag count changes, and says why.
+
+Verified on a synthetic 18-response corpus (14 students, 4 references sharing one distinctive
+phrase; no real data). Every word of the shared phrase moved from df=4 to df=0, weight 2.335 to
+3.708 — **58.8% of the weight restored** to exactly the evidence that identifies a reference. All
+six reference-to-reference pairs rank contiguously above the other 147. With no references
+flagged, `baselineTexts()` returns every response, so prior behaviour is reproduced exactly.
+
+Open, by the same logic but needing signature changes rather than a different argument:
+`buildBurrowsCorpusStats` and `buildSemanticIndex` also compute a cohort baseline over all texts.
+Both need every text present (for vocabulary coverage and for embeddings respectively) while
+drawing their baseline from students alone, so neither is a one-line fix.
+
 ## Phase 5 — Cohort report before pairwise
 
 - [ ] **5.1** Promote `renderSignalReport()` (index.html:14156) from a panel inside the results to
